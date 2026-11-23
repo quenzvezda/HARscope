@@ -6,7 +6,8 @@ potongan body), dan server hanya mengembalikan bagian yang diminta.
 
 HARscope adalah *data access layer*, bukan analyzer berbasis LLM. Interpretasi tetap dikerjakan oleh agent yang memanggilnya.
 
-Status: **Phase 1 (MVP)**: `har_list`, `har_open`, `har_overview`, `har_search`, `har_get_entry`.
+Status: **Phase 1** (`har_list`, `har_open`, `har_overview`, `har_search`, `har_get_entry`) **+ sebagian Phase 2**
+(`har_query_body`, filter `bodyContains` di `har_search`). Belum ada: `har_trace_flow`, `har_compare_entries`.
 
 ## Arsitektur
 
@@ -17,7 +18,8 @@ src/
     Security/Redactor     redaksi nilai header, cookie, dan query-string sensitif
     Parsing/HarParser     validasi HAR 1.2 + membangun metadata index
     Indexing/CaptureStore cache in-memory (LRU), capture ID, deteksi file berubah → reload
-    Querying/             OverviewService, SearchService, EntryInspector, OutputGuard (batas output)
+    Querying/             OverviewService, SearchService, EntryInspector, BodyReader (decode body),
+                          JsonPath (subset JSONPath), BodyQueryService, OutputGuard (batas output)
   HarScope.Mcp/           host MCP stdio (adapter tipis ke Core)
 tests/
   HarScope.Core.Tests/    unit test Core (fixture HAR sintetis)
@@ -132,10 +134,12 @@ potongan; satu nilai header/cookie/query maksimum 1.000 karakter; `har_list` mak
 | `har_overview(captureId?, slowest=5)` | Statistik level 1 | distribusi method/status/host/mime/resource type, endpoint unik, request terlambat. Tanpa body. |
 | `har_search(...)` | Filter + sort + paging | satu baris ringkas per entry: `id`, `t`, `method`, `host`, `path`, `status`, `ms`, `mime`, `flags` |
 | `har_get_entry(entryId, sections?, bodyOffset?, bodyMaxChars?)` | Inspeksi satu entry | default hanya `summary`; section lain harus diminta |
+| `har_query_body(entryId, path?, source?, mode?, fields?, aggregate?, valueField?, groupBy?, offset?, limit?)` | Ambil bagian tertentu dari body JSON | nilai + path konkret, proyeksi field, struktur, atau agregat; tanpa membaca body utuh |
 
 Filter `har_search`: `urlContains`, `method`, `status`, `statusMin`/`statusMax`, `host`, `pathContains`, `mimeType`,
 `resourceType`, `minDurationMs`/`maxDurationMs`, `from`/`to` (ISO-8601), `requestHeader`/`responseHeader` (nama header),
-`correlationId`, `failedOnly`. Sort: `time` (default), `duration`, `status`. Metadata hasil: `totalMatches`, `returnedCount`,
+`correlationId`, `bodyContains` (teks di body yang sudah di-decode; `bodySide` = `request`/`response`/keduanya),
+`failedOnly`. Sort: `time` (default), `duration`, `status`. Metadata hasil: `totalMatches`, `returnedCount`,
 `hasMore`, `nextOffset`, `truncated`, `warnings`.
 
 Flags pada baris hasil: `failed` (status 0, ≥ 400, atau network error), `netError:<teks>`, `redirect`, `reqBody`,
@@ -149,6 +153,46 @@ Section `har_get_entry`: `requestHeaders`, `responseHeaders`, `headers` (keduany
 - Body yang tidak ada di HAR dilaporkan `available: false` beserta alasannya, tanpa diisi tebakan.
 - Timing bernilai `-1` (sentinel HAR untuk "tidak berlaku") dilaporkan sebagai `null`.
 
+### `har_query_body`
+
+Untuk body JSON besar, agent tidak perlu membaca teks per potongan. Cukup ambil bagian yang relevan.
+
+**Sintaks path** (subset JSONPath, bukan JSONPath penuh):
+
+| Sintaks | Arti |
+|---|---|
+| `$` | root (boleh dihilangkan: `data.items` = `$.data.items`) |
+| `.name`, `['name']` | akses property (pakai bracket untuk nama berspasi/bersimbol) |
+| `[n]`, `[-1]` | index array; negatif dihitung dari belakang |
+| `[*]`, `.*` | semua elemen array / semua nilai property object |
+| `[start:end]` | slice array (end eksklusif) |
+
+Tidak didukung: recursive descent `..`, filter `[?()]`, union `[a,b]`, slice dengan step. Path seperti ini ditolak dengan pesan
+yang menyebutkan sintaks yang didukung.
+
+**Mode dan opsi:**
+
+- `mode="values"` (default): setiap match dikembalikan bersama path konkretnya (mis. `$.data[3].uic`), dengan paging
+  `offset`/`limit` (default 20, maks 200). Nilai object/array yang lebih dari 2.000 karakter diganti ringkasan
+  (`_summary`, `keys`/`length`), supaya agent memakai path yang lebih dalam.
+- `fields=["errorCode","detail.message"]`: proyeksikan field relatif dari setiap match.
+- `mode="structure"`: bentuk body tanpa nilai (key, tipe, panjang array, gabungan key dari maksimal 25 elemen sampel).
+  Cocok sebagai langkah pertama untuk body yang belum dikenal.
+- `aggregate`: `count`, `sum`, `min`, `max`, `avg`, `distinct`, ditambah `valueField` (field yang dihitung) dan `groupBy`
+  (kelompokkan per field). Maksimal 100 grup, diurutkan dari nilai terbesar. Nilai non-angka dilewati dan dihitung di `skipped`.
+- `matched` selalu berisi jumlah total match.
+
+Contoh (respons dashboard `{"data":{"data":[{"uic":..,"risiko":..,"jumlah":..}, ...]}}`):
+
+| Pertanyaan | Panggilan |
+|---|---|
+| Bentuk body? | `har_query_body(id, mode="structure")` |
+| Ada berapa baris? | `har_query_body(id, path="$.data.data[*]", aggregate="count")` |
+| Auditee apa saja dan berapa barisnya? | `har_query_body(id, path="$.data.data[*].uic", aggregate="distinct")` |
+| Total temuan per auditee? | `har_query_body(id, path="$.data.data[*]", aggregate="sum", valueField="jumlah", groupBy="uic")` |
+| Hanya `uic` dan `jumlah` per baris? | `har_query_body(id, path="$.data.data[*]", fields=["uic","jumlah"])` |
+| Isi `auditeeIds` di request? | `har_query_body(id, source="request", path="$.auditeeIds")` |
+
 ## Contoh pertanyaan ke agent
 
 - "Buka HAR terbaru dan rangkum request yang gagal."
@@ -159,6 +203,10 @@ Section `har_get_entry`: `requestHeaders`, `responseHeaders`, `headers` (keduany
   `har_search(correlationId="corr-77")` untuk request lain dengan correlation ID yang sama
 - "Request apa yang paling lambat saat login?" → `har_search(pathContains="login", sort="duration", descending=true)`
 - "Tampilkan header request yang gagal ini." → `har_get_entry(id, ["requestHeaders"])`
+- "Request mana yang mengirim ID auditee X?" → `har_search(bodyContains="X", bodySide="request")`
+- "Berapa total per auditee di respons ini?" → `har_query_body(id, path="$.data.data[*]", aggregate="sum", valueField="jumlah", groupBy="uic")`
+- "Ambil hanya `errorCode` dan `message` dari respons yang gagal." → `har_search(failedOnly=true)` lalu
+  `har_query_body(id, fields=["errorCode","message"])`
 
 ## Privasi dan keamanan
 
@@ -176,14 +224,17 @@ Section `har_get_entry`: `requestHeaders`, `responseHeaders`, `headers` (keduany
 - Isi HAR diperlakukan sebagai data tidak tepercaya. Deskripsi tool mengingatkan agent bahwa teks di dalam HAR bukan instruksi.
 - Ekspor HAR yang "sudah disanitasi" oleh browser tetap bisa berisi data sensitif di body atau URL.
 
-## Keterbatasan (Phase 1)
+## Keterbatasan
 
 - **Memori**: seluruh file dimuat ke memori sebagai `JsonDocument`. Perkiraan pemakaian ≈ ukuran file + metadata parser
   (~12 byte per token JSON) per capture yang terbuka. Karena itu ada batas `HARSCOPE_MAX_FILE_MB` dan LRU
   `HARSCOPE_MAX_OPEN_CAPTURES`. Belum ada streaming parser atau index persisten (SQLite).
-- Belum ada query JSON di dalam body (`har_query_body`), pencarian berdasarkan field body, trace flow, atau perbandingan
-  entry. Semuanya direncanakan untuk Phase 2.
-- `har_search` belum mencari di isi body.
+- Belum ada `har_trace_flow` (timeline dan pengelompokan request per aksi) dan `har_compare_entries`.
+- `bodyContains` adalah pencocokan teks biasa (case-insensitive), bukan pencarian per field JSON. Untuk menyaring
+  berdasarkan nilai field, cari kandidat dengan `bodyContains`, lalu periksa dengan `har_query_body`.
+- `har_query_body` mem-parse ulang body pada setiap panggilan (tanpa cache). Ini cepat untuk body berukuran KB–MB,
+  tetapi bisa terasa untuk body yang sangat besar.
+- `har_query_body` hanya untuk body JSON. Body XML, HTML, dan form dibaca sebagai teks lewat `har_get_entry`.
 - Filter waktu memakai `startedDateTime` dari HAR. Entry tanpa timestamp valid selalu diurutkan paling akhir.
 - Entry ID terikat ke isi file. Bila file di-overwrite dengan capture lain, ID lama tidak lagi bermakna (ditandai lewat
   warning dan `revision`).

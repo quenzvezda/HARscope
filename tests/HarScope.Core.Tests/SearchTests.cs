@@ -59,6 +59,27 @@ public class SearchTests
     }
 
     [Fact]
+    public void Filters_by_body_text()
+    {
+        using var t = new TestRoot();
+
+        Assert.Equal(["checkout-flow:entry-7", "checkout-flow:entry-8", "checkout-flow:entry-13"],
+            Run(t, new SearchQuery { BodyContains = "ord-77" }).Entries.Select(e => e.Id).ToArray());
+        Assert.Equal(["checkout-flow:entry-7"],
+            Run(t, new SearchQuery { BodyContains = "ord-77", BodySide = BodySide.Response }).Entries.Select(e => e.Id).ToArray());
+        Assert.Equal(["checkout-flow:entry-8", "checkout-flow:entry-13"],
+            Run(t, new SearchQuery { BodyContains = "ord-77", BodySide = BodySide.Request }).Entries.Select(e => e.Id).ToArray());
+        Assert.Equal("checkout-flow:entry-8",
+            Assert.Single(Run(t, new SearchQuery { BodyContains = "gateway_timeout" }).Entries).Id);
+        // base64-encoded JSON response is decoded before matching
+        Assert.Equal("checkout-flow:entry-11",
+            Assert.Single(Run(t, new SearchQuery { BodyContains = "\"sku\":\"B2\",\"score\"" }).Entries).Id);
+        // form params (no postData.text)
+        Assert.Equal("checkout-flow:entry-13",
+            Assert.Single(Run(t, new SearchQuery { BodyContains = "payment_failed" }).Entries).Id);
+    }
+
+    [Fact]
     public void Paginates_with_offset_and_next_offset()
     {
         using var t = new TestRoot();

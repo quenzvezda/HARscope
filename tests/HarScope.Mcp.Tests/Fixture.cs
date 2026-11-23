@@ -29,6 +29,7 @@ public sealed class Fixture : IDisposable
             new OverviewService(redactor),
             new SearchService(Options, redactor),
             new EntryInspector(Options, redactor),
+            new BodyQueryService(Options),
             new OutputGuard(Options),
             NullLogger<HarTools>.Instance);
     }

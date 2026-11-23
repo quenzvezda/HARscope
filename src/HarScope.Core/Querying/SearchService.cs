@@ -26,6 +26,10 @@ public sealed record SearchQuery
     public string? RequestHeader { get; init; }
     public string? ResponseHeader { get; init; }
     public string? CorrelationId { get; init; }
+    /// <summary>Case-insensitive substring of the decoded text body (binary bodies are skipped).</summary>
+    public string? BodyContains { get; init; }
+    /// <summary>Which body BodyContains looks at; null means request or response.</summary>
+    public BodySide? BodySide { get; init; }
     public bool FailedOnly { get; init; }
     public SearchSort Sort { get; init; } = SearchSort.Time;
     public bool Descending { get; init; }
@@ -118,12 +122,32 @@ public sealed class SearchService(HarScopeOptions options, Redactor redactor)
         if (q.CorrelationId is { Length: > 0 } cid && !e.Correlation.Values.Any(v => v.Contains(cid, ci))) return false;
         if (q.RequestHeader is { Length: > 0 } rqh && !HasHeader(e, "request", rqh)) return false;
         if (q.ResponseHeader is { Length: > 0 } rsh && !HasHeader(e, "response", rsh)) return false;
+        if (q.BodyContains is { Length: > 0 } text && !BodyMatches(e, text, q.BodySide)) return false;
         return true;
     }
 
     private static bool HasHeader(HarEntry e, string side, string name) =>
         Json.Array(Json.Object(e.Raw, side), "headers")
             .Any(h => string.Equals(Json.String(h, "name"), name.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private static bool BodyMatches(HarEntry e, string text, BodySide? side)
+    {
+        bool In(BodySide s)
+        {
+            var body = BodyReader.Read(e, s, int.MaxValue);
+            if (body.Text is not null) return body.Text.Contains(text, StringComparison.OrdinalIgnoreCase);
+            // Form posts without postData.text: match parameter names/values.
+            return body.Params?.Any(p => p.Name.Contains(text, StringComparison.OrdinalIgnoreCase) ||
+                                         (p.Value?.Contains(text, StringComparison.OrdinalIgnoreCase) ?? false)) ?? false;
+        }
+
+        return side switch
+        {
+            Querying.BodySide.Request => e.HasRequestBody && In(Querying.BodySide.Request),
+            Querying.BodySide.Response => e.HasResponseBody && In(Querying.BodySide.Response),
+            _ => (e.HasRequestBody && In(Querying.BodySide.Request)) || (e.HasResponseBody && In(Querying.BodySide.Response)),
+        };
+    }
 
     private static IEnumerable<HarEntry> Order(IEnumerable<HarEntry> entries, SearchQuery q)
     {

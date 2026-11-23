@@ -9,14 +9,14 @@ namespace HarScope.Mcp.Tests;
 public class HarToolsTests
 {
     [Fact]
-    public void Exposes_the_phase_1_tools_as_read_only()
+    public void Exposes_all_tools_as_read_only()
     {
         var tools = typeof(HarTools).GetMethods()
             .Select(m => m.GetCustomAttribute<McpServerToolAttribute>())
             .Where(a => a is not null)
             .ToList();
 
-        Assert.Equal(["har_get_entry", "har_list", "har_open", "har_overview", "har_search"],
+        Assert.Equal(["har_get_entry", "har_list", "har_open", "har_overview", "har_query_body", "har_search"],
             tools.Select(t => t!.Name!).Order().ToArray());
         Assert.All(tools, t => Assert.True(t!.ReadOnly));
     }

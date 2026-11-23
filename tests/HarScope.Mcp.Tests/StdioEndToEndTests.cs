@@ -33,7 +33,7 @@ public class StdioEndToEndTests
         await using var client = await ConnectAsync(f.Root);
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["har_get_entry", "har_list", "har_open", "har_overview", "har_search"],
+        Assert.Equal(["har_get_entry", "har_list", "har_open", "har_overview", "har_query_body", "har_search"],
             tools.Select(t => t.Name).Order().ToArray());
         Assert.All(tools, t => Assert.False(string.IsNullOrWhiteSpace(t.Description)));
 
@@ -59,6 +59,30 @@ public class StdioEndToEndTests
         var entryText = Text(entry);
         Assert.Contains("[REDACTED", entryText);
         Assert.DoesNotContain("eyJhbGciOiJIUzI1NiJ9.", entryText);
+
+        var byBody = await client.CallToolAsync("har_search", new Dictionary<string, object?>
+        {
+            ["bodyContains"] = "GATEWAY_TIMEOUT",
+        });
+        Assert.Contains("checkout-flow:entry-8", Text(byBody));
+
+        var projected = await client.CallToolAsync("har_query_body", new Dictionary<string, object?>
+        {
+            ["entryId"] = "checkout-flow:entry-4",
+            ["path"] = "$.items[*]",
+            ["fields"] = new[] { "sku", "price" },
+        });
+        Assert.NotEqual(true, projected.IsError);
+        Assert.Contains("{\"sku\":\"B2\",\"price\":79.0}", Text(projected));
+
+        var sum = await client.CallToolAsync("har_query_body", new Dictionary<string, object?>
+        {
+            ["entryId"] = "checkout-flow:entry-4",
+            ["path"] = "$.items[*].price",
+            ["aggregate"] = "sum",
+        });
+        using var sumDoc = JsonDocument.Parse(Text(sum));
+        Assert.Equal(138.9m, sumDoc.RootElement.GetProperty("aggregate").GetProperty("value").GetDecimal());
     }
 
     [Fact]

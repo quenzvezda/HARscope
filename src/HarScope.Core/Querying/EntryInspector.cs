@@ -138,8 +138,8 @@ public sealed class EntryInspector(HarScopeOptions options, Redactor redactor)
             RequestHeaders = wanted.Contains(EntrySections.RequestHeaders) ? Headers(request, true) : null,
             ResponseHeaders = wanted.Contains(EntrySections.ResponseHeaders) ? Headers(response, false) : null,
             QueryParams = wanted.Contains(EntrySections.QueryParams) ? QueryParams(request, entry, ref truncated) : null,
-            RequestBody = wanted.Contains(EntrySections.RequestBody) ? RequestBody(request, bodyOffset, perBody) : null,
-            ResponseBody = wanted.Contains(EntrySections.ResponseBody) ? ResponseBody(entry, response, bodyOffset, perBody) : null,
+            RequestBody = wanted.Contains(EntrySections.RequestBody) ? Body(entry, BodySide.Request, bodyOffset, perBody, warnings) : null,
+            ResponseBody = wanted.Contains(EntrySections.ResponseBody) ? Body(entry, BodySide.Response, bodyOffset, perBody, warnings) : null,
             Timings = wanted.Contains(EntrySections.Timings) ? Timings(entry) : null,
             Cookies = wanted.Contains(EntrySections.Cookies) ? Cookies(request, response) : null,
             Truncated = truncated,
@@ -247,83 +247,23 @@ public sealed class EntryInspector(HarScopeOptions options, Redactor redactor)
         return result;
     }
 
-    private BodyChunk RequestBody(JsonElement? request, int offset, int maxChars)
+    private BodyChunk Body(HarEntry entry, BodySide side, int offset, int maxChars, List<string> warnings)
     {
-        var post = request is { } r ? Json.Object(r, "postData") : null;
-        if (post is not { } pd)
-            return new BodyChunk { Available = false, Reason = "Request has no postData." };
-
-        var mime = Json.String(pd, "mimeType");
-        var text = Json.String(pd, "text");
-        IReadOnlyList<FormParam>? formParams = null;
-
-        var paramList = Json.Array(pd, "params").ToList();
-        if (paramList.Count > 0)
-        {
-            formParams = paramList.Select(p => new FormParam(
-                Json.String(p, "name") ?? "",
-                Json.String(p, "value") is { } v && v.Length > options.MaxValueChars ? v[..options.MaxValueChars] + "…" : Json.String(p, "value"),
-                Json.String(p, "fileName"),
-                Json.String(p, "contentType"))).Take(200).ToList();
-        }
-
-        if (string.IsNullOrEmpty(text))
-        {
-            return formParams is null
-                ? new BodyChunk { Available = false, MimeType = mime, Reason = "postData.text is empty or absent." }
-                : new BodyChunk { Available = true, MimeType = mime, Params = formParams };
-        }
-
-        return Slice(text, mime, null, null, offset, maxChars) with { Params = formParams };
-    }
-
-    private BodyChunk ResponseBody(HarEntry entry, JsonElement? response, int offset, int maxChars)
-    {
-        var content = response is { } r ? Json.Object(r, "content") : null;
-        if (content is not { } c)
-            return new BodyChunk { Available = false, Reason = entry.Status == 0 ? "No response was recorded." : "Response has no content object." };
-
-        var mime = Json.String(c, "mimeType");
-        var text = Json.String(c, "text");
-        var size = entry.ResponseBodySize;
-        if (string.IsNullOrEmpty(text))
-        {
-            var reason = entry.Status == 0 ? "No response was recorded (request failed or was blocked)."
-                : size is > 0 ? "Response body was not captured in the HAR (content.text is absent; size is known)."
-                : "Response body is empty or was not captured.";
-            if (Json.String(c, "comment") is { Length: > 0 } comment) reason += $" Exporter comment: {Shorten(comment)}";
-            return new BodyChunk { Available = false, MimeType = mime, SizeBytes = size, Reason = reason };
-        }
-
-        if (!entry.ResponseBase64)
-            return IsTextual(mime) || mime is null
-                ? Slice(text, mime, null, size, offset, maxChars)
-                : new BodyChunk
-                {
-                    Available = true, Binary = true, MimeType = mime, SizeBytes = size,
-                    Reason = "Non-text content is not returned.",
-                };
-
-        byte[] bytes;
-        try
-        {
-            bytes = Convert.FromBase64String(text);
-        }
-        catch (FormatException)
-        {
-            return new BodyChunk { Available = false, MimeType = mime, SourceEncoding = "base64", Reason = "content.text is marked base64 but is not valid Base64." };
-        }
-
-        if (!IsTextual(mime) && (mime is not null || !LooksLikeUtf8Text(bytes)))
+        var body = BodyReader.Read(entry, side, options.MaxValueChars);
+        if (body.Text is null)
         {
             return new BodyChunk
             {
-                Available = true, Binary = true, MimeType = mime, SourceEncoding = "base64", SizeBytes = bytes.Length,
-                Reason = "Binary content is not returned.",
+                Available = body.Available, Reason = body.Reason, MimeType = body.MimeType, SourceEncoding = body.SourceEncoding,
+                Binary = body.Binary, SizeBytes = body.SizeBytes, Params = body.Params,
             };
         }
 
-        return Slice(Encoding.UTF8.GetString(bytes), mime, "base64", bytes.Length, offset, maxChars);
+        var chunk = Slice(body.Text, body.MimeType, body.SourceEncoding, body.SizeBytes, offset, maxChars) with { Params = body.Params };
+        if (chunk.NextOffset is not null && body.LooksLikeJson)
+            warnings.Add($"{(side == BodySide.Request ? "Request" : "Response")} body is large JSON: use har_query_body " +
+                         "(mode='structure', a path, fields or an aggregate) instead of paging through it.");
+        return chunk;
     }
 
     private static BodyChunk Slice(string text, string? mime, string? encoding, long? size, int offset, int maxChars)
@@ -350,38 +290,12 @@ public sealed class EntryInspector(HarScopeOptions options, Redactor redactor)
         };
     }
 
-    public static bool IsTextual(string? mime)
-    {
-        if (mime is null) return false;
-        var m = mime.ToLowerInvariant();
-        return m.StartsWith("text/") || m.Contains("json") || m.Contains("xml") || m.Contains("javascript") ||
-               m.Contains("ecmascript") || m.Contains("x-www-form-urlencoded") || m.Contains("graphql") ||
-               m.Contains("yaml") || m.Contains("csv");
-    }
-
-    private static bool LooksLikeUtf8Text(byte[] bytes)
-    {
-        if (Array.IndexOf(bytes, (byte)0) >= 0) return false;
-        try
-        {
-            new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes);
-            return true;
-        }
-        catch (DecoderFallbackException)
-        {
-            return false;
-        }
-    }
-
     private string Shorten(string value, ref bool truncated)
     {
         if (value.Length <= options.MaxValueChars) return value;
         truncated = true;
         return value[..options.MaxValueChars] + $"…[+{value.Length - options.MaxValueChars} chars]";
     }
-
-    private string Shorten(string value) =>
-        value.Length <= options.MaxValueChars ? value : value[..options.MaxValueChars] + "…";
 
     private static string Unescape(string s)
     {

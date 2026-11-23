@@ -28,10 +28,11 @@ builder.Services.AddSingleton<CaptureStore>();
 builder.Services.AddSingleton<OverviewService>();
 builder.Services.AddSingleton<SearchService>();
 builder.Services.AddSingleton<EntryInspector>();
+builder.Services.AddSingleton<BodyQueryService>();
 builder.Services.AddSingleton<OutputGuard>();
 
 builder.Services
-    .AddMcpServer(o => o.ServerInfo = new() { Name = "harscope", Version = "0.1.0" })
+    .AddMcpServer(o => o.ServerInfo = new() { Name = "harscope", Version = "0.2.0" })
     .WithStdioServerTransport()
     .WithTools<HarTools>();
 
