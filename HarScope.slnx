@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/HarScope.Core/HarScope.Core.csproj" />
+    <Project Path="src/HarScope.Mcp/HarScope.Mcp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/HarScope.Core.Tests/HarScope.Core.Tests.csproj" />
+    <Project Path="tests/HarScope.Mcp.Tests/HarScope.Mcp.Tests.csproj" />
+  </Folder>
+</Solution>
