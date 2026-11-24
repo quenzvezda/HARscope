@@ -157,7 +157,7 @@ public class LoadingTests
     }
 
     [Theory]
-    [InlineData("Checkout Gagal 23-11.har", "checkout-gagal-23-11")]
+    [InlineData("Checkout Failed 23-11.har", "checkout-failed-23-11")]
     [InlineData("team/Login_OK.HAR", "team-login-ok")]
     [InlineData("!!!.har", "capture")]
     public void Slug_is_derived_from_relative_path(string path, string expected) =>

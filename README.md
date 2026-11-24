@@ -1,79 +1,79 @@
 # HARscope
 
-MCP server lokal untuk menyelidiki file HAR (HTTP Archive) secara hemat token. Agent AI tidak pernah menerima isi
-HAR utuh. Agent mengajukan query kecil secara bertahap (*progressive disclosure*: ringkasan → timeline → pencarian →
-satu entry → bagian body), dan server hanya mengembalikan bagian yang diminta.
+A local MCP server for token-efficient investigation of HAR (HTTP Archive) files. AI agents query captures in small,
+focused steps (*progressive disclosure*: summary → timeline → search → one entry → part of a body), and the server
+returns only the requested data in bounded responses instead of sending the entire HAR file at once.
 
-HARscope adalah *data access layer*, bukan analyzer berbasis LLM. Interpretasi tetap dikerjakan oleh agent yang memanggilnya.
+HARscope is a *data access layer*, not an LLM-based analyzer. The calling agent interprets the results.
 
-Versi **0.3.0**, 10 tool:
+Version **0.3.0**, 10 tools:
 
-| Kelompok | Tool |
+| Category | Tools |
 |---|---|
-| File | `har_list`, `har_open` |
-| Ringkasan dan timeline | `har_overview`, `har_trace_flow` |
-| Pencarian dan inspeksi | `har_search`, `har_get_entry`, `har_query_body` |
-| Perbandingan | `har_compare_entries`, `har_compare_captures` |
-| Reproduksi | `har_repro` (template saja, tidak ada request yang dikirim) |
+| Files | `har_list`, `har_open` |
+| Summaries and timelines | `har_overview`, `har_trace_flow` |
+| Search and inspection | `har_search`, `har_get_entry`, `har_query_body` |
+| Comparison | `har_compare_entries`, `har_compare_captures` |
+| Reproduction | `har_repro` (templates only; no requests are sent) |
 
-## Arsitektur
+## Architecture
 
 ```text
 src/
-  HarScope.Core/          library inti, tanpa dependensi MCP (bisa di-reuse untuk CLI)
-    Security/PathGuard    validasi path: hanya file .har di bawah HAR_ROOT, tolak "..", path absolut, symlink/junction keluar root
-    Security/Redactor     redaksi nilai header, cookie, dan query-string sensitif
-    Parsing/HarParser     validasi HAR 1.2 + membangun metadata index
-    Indexing/CaptureStore cache capture in-memory (LRU), capture ID, deteksi file berubah → reload
-    Querying/             OverviewService, SearchService, EntryInspector, BodyReader (decode body),
-                          JsonPath (subset JSONPath), WhereClause (filter baris), BodyQueryService,
-                          JsonBodyCache (LRU body JSON yang sudah di-parse), OutputGuard (batas output)
-    Analysis/             FlowService (timeline), CompareService + JsonDiff (diff), ReproService (template reproduksi)
-  HarScope.Mcp/           host MCP stdio (adapter tipis ke Core) + ServerGuide (instruksi untuk client)
+  HarScope.Core/          core library with no MCP dependency (reusable for a CLI)
+    Security/PathGuard    path validation: only .har files under HAR_ROOT; rejects "..", absolute paths, and links outside root
+    Security/Redactor     redacts sensitive header, cookie, and query-string values
+    Parsing/HarParser     HAR 1.2 validation + metadata indexing
+    Indexing/CaptureStore in-memory capture cache (LRU), capture IDs, file change detection → reload
+    Querying/             OverviewService, SearchService, EntryInspector, BodyReader (body decoding),
+                          JsonPath (JSONPath subset), WhereClause (row filtering), BodyQueryService,
+                          JsonBodyCache (LRU cache of parsed JSON bodies), OutputGuard (output limits)
+    Analysis/             FlowService (timeline), CompareService + JsonDiff (diffs), ReproService (reproduction templates)
+  HarScope.Mcp/           MCP stdio host (thin adapter over Core) + ServerGuide (client instructions)
 tests/
-  HarScope.Core.Tests/    unit test Core (fixture HAR sintetis)
-  HarScope.Mcp.Tests/     test tool + test end-to-end dengan client MCP resmi lewat stdio
+  HarScope.Core.Tests/    Core unit tests (synthetic HAR fixtures)
+  HarScope.Mcp.Tests/     tool tests + end-to-end tests using the official MCP client over stdio
 scripts/
-  install.ps1             test → publish ke staging → ganti file yang terkunci → verifikasi
-  bench/Bench.cs          benchmark HAR besar sintetis (file-based app .NET 10)
-samples/checkout-flow.har HAR sintetis: login → profile → search → cart → checkout → payment gagal
+  install.ps1            test → publish to staging → replace locked files → verify
+  bench/Bench.cs         synthetic large-HAR benchmark (.NET 10 file-based app)
+samples/checkout-flow.har synthetic HAR: login → profile → search → cart → checkout → failed payment
 ```
 
-Alur data:
+Data flow:
 
 ```text
-file .har (di bawah HAR_ROOT)
-  → PathGuard (canonical path, cek link)
-  → HarParser: JsonDocument + metadata index per entry (ID, waktu, method, host, path, status, durasi, mime,
-    ketersediaan body, header korelasi)
-  → CaptureStore (maks N capture di memori, reload otomatis bila file berubah)
+.har file (under HAR_ROOT)
+  → PathGuard (canonical path, link checks)
+  → HarParser: JsonDocument + per-entry metadata index (ID, time, method, host, path, status, duration, MIME type,
+    body availability, correlation headers)
+  → CaptureStore (up to N captures in memory, automatic reload when files change)
   → Overview / Flow / Search / EntryInspector / BodyQuery / Compare / Repro
-    (body di-decode dan di-parse hanya saat diminta, lalu disimpan di JsonBodyCache)
-  → Redactor + OutputGuard → JSON ringkas ke agent
+    (bodies are decoded and parsed only when requested, then cached in JsonBodyCache)
+  → Redactor + OutputGuard → compact JSON for the agent
 ```
 
-### Capture ID dan entry ID
+### Capture IDs and entry IDs
 
-- `captureId` = slug dari path relatif file: huruf kecil, karakter selain huruf/angka diganti `-`, tanpa `.har`.
-  `Checkout Gagal 23-11.har` → `checkout-gagal-23-11`; `team/login.har` → `team-login`. Bila dua file menghasilkan slug yang sama,
-  file yang dibuka belakangan mendapat suffix `-2`.
-- `entryId` = `<captureId>:entry-<n>`. `n` adalah posisi asli (mulai dari 1) di array `log.entries`.
-- Setiap hasil menyertakan `revision` (hash pendek isi file). Bila file berubah di disk, capture di-reload dan agent
-  menerima warning bahwa entry ID lama bisa menunjuk ke request yang berbeda.
+- `captureId` is a slug of the relative file path: lowercase, non-alphanumeric characters replaced with `-`, without `.har`.
+  `Checkout Failed 23-11.har` → `checkout-failed-23-11`; `team/login.har` → `team-login`. If two files produce the same slug,
+  the file opened later receives a `-2` suffix.
+- `entryId` = `<captureId>:entry-<n>`. `n` is the original position (starting at 1) in the `log.entries` array.
+- Results include a `revision` (a short hash of the file contents). If the file changes on disk, the capture is reloaded
+  and the agent receives a warning that old entry IDs may refer to different requests.
 
-### Cara server berjalan
+### How the server runs
 
-Transport-nya stdio. Setiap sesi MCP client (mis. satu sesi Claude Code) menjalankan prosesnya sendiri sebagai proses anak.
-Proses itu tetap hidup selama sesi terbuka dan menunggu pesan di stdin tanpa memakai CPU. Server tidak membuka port.
-Akibatnya, cache HAR dan kunci fingerprint redaksi berlaku per sesi, dan file exe terkunci selama ada sesi yang memakainya
-(lihat `scripts/install.ps1`).
+The transport is stdio. Each MCP client session (for example, a Claude Code session) starts its own child process.
+The process stays alive while the session is open and waits for messages on stdin without busy-waiting. The server opens no ports.
+As a result, the HAR cache and redaction fingerprint key are scoped to each session, and the executable remains locked
+while a session is using it (see `scripts/install.ps1`).
 
-## Prasyarat
+## Prerequisites
 
-- .NET SDK 10 (diuji dengan 10.0.402)
-- Tidak perlu database, layanan cloud, atau akses internet saat runtime.
+- .NET SDK 10 (tested with 10.0.402).
+- No database, cloud service, or internet access is required by the server at runtime.
 
-## Build, test, install
+## Build, test, and install
 
 ```powershell
 dotnet build
@@ -83,28 +83,28 @@ dotnet build
 dotnet test
 ```
 
-Install atau update ke `%USERPROFILE%\.mcp-servers\harscope`. Skrip ini menjalankan test, publish ke staging, mematikan
-proses HARscope yang mengunci file, menyalin, lalu memverifikasi hash:
+Install or update to `%USERPROFILE%\.mcp-servers\harscope`. The script runs tests, publishes to staging, stops HARscope
+processes that lock the destination files, copies the files, and verifies their hashes:
 
 ```powershell
 .\scripts\install.ps1
 ```
 
-Pemasangan pertama sekaligus mendaftarkan ke Claude Code (scope user):
+For the first installation, also register with Claude Code at user scope:
 
 ```powershell
 .\scripts\install.ps1 -Register -HarRoot D:\network-logs
 ```
 
-Proses HARscope yang dimatikan saat update akan dijalankan lagi oleh Claude Code. Daftar tool yang berubah baru terlihat
-di sesi baru.
+HARscope processes stopped during an update are started again by Claude Code. Updated tool definitions become visible
+in a new session.
 
-Exe hasil publish bersifat *framework-dependent*, jadi mesin target butuh .NET 10 runtime. Jangan pakai `dotnet run` di
-config MCP, karena perintah itu mem-build ulang setiap kali client start (lambat) dan output build-nya bisa mengotori stdout.
+The published executable is *framework-dependent*, so the target machine needs the .NET 10 runtime. Avoid `dotnet run`
+in MCP configuration: it rebuilds whenever the client starts, adding startup time and potentially writing build output to stdout.
 
-## Setup MCP client manual
+## Manual MCP client setup
 
-Semua contoh memakai stdio. Ganti `D:\\network-logs` dengan folder tempat Anda menyimpan file `.har`.
+All examples use stdio. Replace `D:\network-logs` with the folder where you store `.har` files (escape backslashes as `\\` in JSON).
 
 **Claude Code (CLI):**
 
@@ -112,7 +112,7 @@ Semua contoh memakai stdio. Ganti `D:\\network-logs` dengan folder tempat Anda m
 claude mcp add harscope --scope user --env HAR_ROOT=D:\network-logs -- C:\Users\<user>\.mcp-servers\harscope\HarScope.Mcp.exe
 ```
 
-**`.mcp.json` (Claude Code, scope project):**
+**`.mcp.json` (Claude Code, project scope):**
 
 ```json
 {
@@ -126,232 +126,237 @@ claude mcp add harscope --scope user --env HAR_ROOT=D:\network-logs -- C:\Users\
 }
 ```
 
-**Claude Desktop (`claude_desktop_config.json`), Cursor, dan client lain** memakai format `mcpServers` yang sama
+**Claude Desktop (`claude_desktop_config.json`), Cursor, and other clients** use the same `mcpServers` format
 (`command` + `env`).
 
-Saat terhubung, server mengirim **instructions** (panduan singkat untuk model): kapan HARscope dipakai, urutan tool
-yang disarankan, dan larangan membaca file `.har` secara langsung. Teksnya ada di
+On connection, the server sends **instructions** (a short guide for the model): when to use HARscope, the recommended
+tool sequence, and guidance against reading `.har` files directly. The text is in
 [ServerGuide.cs](src/HarScope.Mcp/ServerGuide.cs).
 
-**Mencoba dengan sample:** arahkan `HAR_ROOT` ke folder `samples` di repo ini, lalu minta agent membuka `checkout-flow.har`.
+**Try the sample:** point `HAR_ROOT` to this repository's `samples` folder, then ask the agent to open `checkout-flow.har`.
 
-### Mengekspor HAR dari browser
+### Exporting a HAR from your browser
 
-Chrome/Edge: DevTools → tab **Network** → centang **Preserve log** → jalankan alurnya → klik kanan daftar request →
-**Save all as HAR with content**. Simpan file ke folder `HAR_ROOT`. Chrome versi baru menyediakan pilihan ekspor HAR
-yang sudah disanitasi (tanpa cookie/authorization) dan yang lengkap. Keduanya bisa dibaca HARscope.
+Chrome/Edge: DevTools → **Network** tab → enable **Preserve log** → perform the workflow → right-click the request list →
+**Save all as HAR with content**. Save the file in `HAR_ROOT`. Recent Chrome versions offer both sanitized HAR exports
+(without cookies/authorization) and complete exports. HARscope can read either.
 
-## Konfigurasi
+## Configuration
 
-Konfigurasi dibaca dari environment variable. Alternatifnya, argumen command line (`--HAR_ROOT D:\logs`) atau
-`appsettings.json` di folder exe.
+Settings are read from environment variables. Alternatively, use command-line arguments (`--HAR_ROOT D:\logs`) or
+an `appsettings.json` file next to the executable.
 
-| Variabel | Default | Keterangan |
+| Variable | Default | Description |
 |---|---|---|
-| `HAR_ROOT` | (wajib) | Folder file HAR. Tidak ada file di luar folder ini yang bisa dibaca. |
-| `HARSCOPE_MAX_FILE_MB` | 256 | File yang lebih besar ditolak (seluruh file dimuat ke memori). |
-| `HARSCOPE_MAX_OUTPUT_CHARS` | 24000 | Batas ukuran satu hasil tool (≈ 6k token). |
-| `HARSCOPE_MAX_OPEN_CAPTURES` | 4 | Jumlah capture di memori; yang paling lama tidak dipakai akan di-evict lalu di-reload saat diminta lagi. |
-| `HARSCOPE_DEFAULT_BODY_CHARS` | 4000 | Panjang potongan body default di `har_get_entry`. |
-| `HARSCOPE_REDACT` | `on` | `off` mematikan semua redaksi. |
-| `HARSCOPE_REDACT_HEADERS` | – | Nama header tambahan yang diredaksi, pisahkan dengan koma. |
-| `HARSCOPE_REDACT_QUERY` | – | Nama query param tambahan yang diredaksi, pisahkan dengan koma. |
+| `HAR_ROOT` | (required) | Folder containing HAR files. Files outside this folder cannot be read. |
+| `HARSCOPE_MAX_FILE_MB` | 256 | Larger files are rejected (the entire file is loaded into memory). |
+| `HARSCOPE_MAX_OUTPUT_CHARS` | 24000 | Size limit for one tool result (≈ 6k tokens). |
+| `HARSCOPE_MAX_OPEN_CAPTURES` | 4 | Captures held in memory; the least recently used is evicted and reloaded when requested again. |
+| `HARSCOPE_DEFAULT_BODY_CHARS` | 4000 | Default body chunk length in `har_get_entry`. |
+| `HARSCOPE_REDACT` | `on` | Set to `off` to disable redaction. |
+| `HARSCOPE_REDACT_HEADERS` | – | Additional header names to redact, separated by commas. |
+| `HARSCOPE_REDACT_QUERY` | – | Additional query parameter names to redact, separated by commas. |
 
-Batas lain (tetap di kode): page pencarian default 20 dan maksimum 100; body maksimum 20.000 karakter per potongan;
-satu nilai header/cookie/query maksimum 1.000 karakter; `har_list` maksimum 500 file; cache body JSON 64 entry / 64 MB.
+Other limits (fixed in code): search pages default to 20 entries, maximum 100; bodies return at most 20,000 characters per chunk;
+individual header/cookie/query values are limited to 1,000 characters; `har_list` returns at most 500 files; the JSON body cache
+holds up to 64 entries / 64 MB.
 
-## Tool
+## Tools
 
-| Tool | Fungsi | Catatan output |
+| Tool | Purpose | Output notes |
 |---|---|---|
-| `har_list` | Daftar file `.har` di `HAR_ROOT` (terbaru dulu) | path relatif, ukuran, mtime, `captureId` bila sudah dibuka |
-| `har_open(path)` | Load file dan jadikan capture aktif | `captureId`, `revision`, jumlah entry, jumlah gagal, rentang waktu |
-| `har_overview(captureId?, slowest=5)` | Statistik level 1 | distribusi method/status/host/mime/resource type, endpoint unik, request terlambat. Tanpa body. |
-| `har_trace_flow(...)` | Timeline per kelompok aksi | grup berdasarkan jeda waktu, call per grup, kegagalan beruntun, link pasti |
-| `har_search(...)` | Filter + sort + paging | satu baris ringkas per entry: `id`, `t`, `method`, `host`, `path`, `status`, `ms`, `mime`, `flags` |
-| `har_get_entry(entryId, sections?, bodyOffset?, bodyMaxChars?)` | Inspeksi satu entry | default hanya `summary`; section lain harus diminta |
-| `har_query_body(entryId, path?, ...)` | Bagian tertentu dari body JSON | nilai + path konkret, `fields`, `where`, struktur, atau agregat |
-| `har_compare_entries(entryIdA, entryIdB, ...)` | Diff dua entry | status, query, header, body JSON per path |
-| `har_compare_captures(captureA, captureB, ...)` | Diff call yang sama di dua HAR | pasangan berbeda/sama, call yang hanya ada di satu sisi |
-| `har_repro(entryIds, format?, allHeaders?)` | Template reproduksi tersanitasi | `.http` atau cURL, `variables`, `dependencies` |
+| `har_list` | List `.har` files in `HAR_ROOT` (newest first) | Relative path, size, mtime, `captureId` if already opened |
+| `har_open(path)` | Load a file and make it the active capture | `captureId`, `revision`, entry count, failure count, time range |
+| `har_overview(captureId?, slowest=5)` | Top-level statistics | Method/status/host/MIME/resource-type distributions, unique endpoints, slowest requests. No bodies. |
+| `har_trace_flow(...)` | Timeline grouped by activity | Groups based on time gaps, calls per group, failure streaks, confirmed links |
+| `har_search(...)` | Filter + sort + pagination | One compact row per entry: `id`, `t`, `method`, `host`, `path`, `status`, `ms`, `mime`, `flags` |
+| `har_get_entry(entryId, sections?, bodyOffset?, bodyMaxChars?)` | Inspect one entry | Only `summary` by default; other sections must be requested |
+| `har_query_body(entryId, path?, ...)` | Query specific parts of a JSON body | Values + concrete paths, `fields`, `where`, structure, or aggregates |
+| `har_compare_entries(entryIdA, entryIdB, ...)` | Diff two entries | Status, query parameters, headers, JSON bodies by path |
+| `har_compare_captures(captureA, captureB, ...)` | Diff matching calls across two HAR files | Different/identical pairs, calls present on only one side |
+| `har_repro(entryIds, format?, allHeaders?)` | Sanitized reproduction templates | `.http` or cURL, `variables`, `dependencies` |
 
 ### `har_search`
 
-Filter: `urlContains`, `method`, `status`, `statusMin`/`statusMax`, `host`, `pathContains`, `mimeType`, `resourceType`,
-`minDurationMs`/`maxDurationMs`, `from`/`to` (ISO-8601), `requestHeader`/`responseHeader` (nama header), `correlationId`,
-`bodyContains` (teks di body yang sudah di-decode; `bodySide` = `request`/`response`/keduanya), `failedOnly`,
-`includeDataUrls`. Entri `data:` (gambar/font inline) disembunyikan secara default dan jumlahnya disebut di `warnings`.
-Sort: `time` (default), `duration`, `status`. Metadata hasil: `totalMatches`, `returnedCount`, `hasMore`, `nextOffset`,
+Filters: `urlContains`, `method`, `status`, `statusMin`/`statusMax`, `host`, `pathContains`, `mimeType`, `resourceType`,
+`minDurationMs`/`maxDurationMs`, `from`/`to` (ISO-8601), `requestHeader`/`responseHeader` (header names), `correlationId`,
+`bodyContains` (text in decoded bodies; `bodySide` = `request`/`response`/either), `failedOnly`,
+`includeDataUrls`. Entries with `data:` URLs (inline images/fonts) are hidden by default, with their count included in `warnings`.
+Sort keys: `time` (default), `duration`, `status`. Result metadata: `totalMatches`, `returnedCount`, `hasMore`, `nextOffset`,
 `truncated`, `warnings`.
 
-Flags pada baris hasil: `failed` (status 0, ≥ 400, atau network error), `netError:<teks>`, `redirect`, `reqBody`,
-`resBody` / `resBody:base64`, `noResBody`, `correlated` (punya header trace/korelasi).
+Result row flags: `failed` (status 0, ≥ 400, or a network error), `netError:<text>`, `redirect`, `reqBody`,
+`resBody` / `resBody:base64`, `noResBody`, `correlated` (has trace/correlation headers).
 
 ### `har_get_entry`
 
-Section: `requestHeaders`, `responseHeaders`, `headers` (keduanya), `queryParams`, `requestBody`, `responseBody`,
+Sections: `requestHeaders`, `responseHeaders`, `headers` (both), `queryParams`, `requestBody`, `responseBody`,
 `timings`, `cookies`.
-- Body dikembalikan per potongan: `totalChars`, `offset`, `returnedChars`, `truncated`, `nextOffset`. Bila body JSON lebih
-  besar dari satu potongan, hasilnya menyarankan `har_query_body`.
-- Body Base64 yang berupa teks (mis. JSON) di-decode. Body biner (gambar, font, dll.) hanya dikembalikan metadatanya.
-- Body yang tidak ada di HAR dilaporkan `available: false` beserta alasannya, tanpa diisi tebakan.
-- Timing bernilai `-1` (sentinel HAR untuk "tidak berlaku") dilaporkan sebagai `null`.
+
+- Bodies are returned in chunks: `totalChars`, `offset`, `returnedChars`, `truncated`, `nextOffset`. If a JSON body is
+  larger than one chunk, the result suggests using `har_query_body`.
+- Base64-encoded text bodies (for example, JSON) are decoded. Binary bodies (images, fonts, etc.) return metadata only.
+- Bodies missing from the HAR are reported as `available: false` with a reason; no content is inferred.
+- Timing values of `-1` (the HAR sentinel for "not applicable") are reported as `null`.
 
 ### `har_query_body`
 
-Untuk body JSON besar, agent tidak perlu membaca teks per potongan. Cukup ambil bagian yang relevan.
+For large JSON bodies, agents can retrieve the relevant data without reading the text chunk by chunk.
 
-**Sintaks path** (subset JSONPath, bukan JSONPath penuh):
+**Path syntax** (a JSONPath subset, not full JSONPath):
 
-| Sintaks | Arti |
+| Syntax | Meaning |
 |---|---|
-| `$` | root (boleh dihilangkan: `data.items` = `$.data.items`) |
-| `.name`, `['name']` | akses property (pakai bracket untuk nama berspasi/bersimbol) |
-| `[n]`, `[-1]` | index array; negatif dihitung dari belakang |
-| `[*]`, `.*` | semua elemen array / semua nilai property object |
-| `[start:end]` | slice array (end eksklusif) |
+| `$` | Root (optional: `data.items` = `$.data.items`) |
+| `.name`, `['name']` | Property access (use brackets for names containing spaces or symbols) |
+| `[n]`, `[-1]` | Array index; negative indices count from the end |
+| `[*]`, `.*` | All array elements / all object property values |
+| `[start:end]` | Array slice (exclusive end) |
 
-Tidak didukung: recursive descent `..`, filter `[?()]`, union `[a,b]`, slice dengan step. Path seperti ini ditolak dengan pesan
-yang menyebutkan sintaks yang didukung. Untuk menyaring baris, gunakan `where`.
+Not supported: recursive descent `..`, filters `[?()]`, unions `[a,b]`, or slices with a step. These paths are rejected with
+an error listing the supported syntax. Use `where` to filter rows.
 
-**Mode dan opsi:**
+**Modes and options:**
 
-- `mode="values"` (default): setiap match dikembalikan bersama path konkretnya (mis. `$.data[3].uic`), dengan paging
-  `offset`/`limit` (default 20, maks 200). Nilai object/array yang lebih dari 2.000 karakter diganti ringkasan
-  (`_summary`, `keys`/`length`).
-- `fields=["errorCode","detail.message"]`: proyeksikan field relatif dari setiap match.
-- `where=["<field> <op> [nilai]", ...]`: saring match sebelum proyeksi/agregat; beberapa kondisi digabung dengan AND.
-  Operator: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `notContains`, `startsWith` (teks, case-insensitive),
-  `exists`, `notExists`. Nilai berupa angka, `true`/`false`/`null`, `'teks berspasi'`, atau teks tanpa kutip. `@` berarti
-  match itu sendiri. Field yang tidak ada tidak pernah lolos `==`/`<`/`>`/`contains`/`exists`, tetapi lolos `!=` dan
-  `notContains`. Hasil menyertakan `scanned` (jumlah sebelum filter) dan `matched` (sesudah filter).
-- `mode="structure"`: bentuk body tanpa nilai (key, tipe, panjang array, gabungan key dari maksimal 25 elemen sampel).
-- `aggregate`: `count`, `sum`, `min`, `max`, `avg`, `distinct`, ditambah `valueField` (field yang dihitung) dan `groupBy`
-  (kelompokkan per field). Maksimal 100 grup, diurutkan dari nilai terbesar. Nilai non-angka dilewati dan dihitung di `skipped`.
+- `mode="values"` (default): each match is returned with its concrete path (for example, `$.data[3].team`), with
+  `offset`/`limit` pagination (default 20, maximum 200). Object/array values larger than 2,000 characters are replaced with
+  a summary (`_summary`, `keys`/`length`).
+- `fields=["errorCode","detail.message"]`: project relative fields from each match.
+- `where=["<field> <op> [value]", ...]`: filter matches before projection/aggregation; multiple conditions are combined with AND.
+  Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `notContains`, `startsWith` (case-insensitive text),
+  `exists`, `notExists`. Values can be numbers, `true`/`false`/`null`, `'text with spaces'`, or unquoted text. `@` refers to
+  the match itself. Missing fields never satisfy `==`/`<`/`>`/`contains`/`exists`, but do satisfy `!=` and
+  `notContains`. Results include `scanned` (before filtering) and `matched` (after filtering).
+- `mode="structure"`: the body shape without values (keys, types, array lengths, and merged keys from up to 25 sampled elements).
+- `aggregate`: `count`, `sum`, `min`, `max`, `avg`, `distinct`, with optional `valueField` (the field to aggregate) and `groupBy`
+  (group by a field). At most 100 groups are returned, sorted by descending value. Non-numeric values are skipped and counted in `skipped`.
 
-Contoh (respons dashboard `{"data":{"data":[{"uic":..,"risiko":..,"jumlah":..}, ...]}}`):
+Example dashboard response: `{"data":{"data":[{"team":"OPS","risk":"Operational","count":10}, ...]}}`.
 
-| Pertanyaan | Panggilan |
+| Question | Call |
 |---|---|
-| Bentuk body? | `har_query_body(id, mode="structure")` |
-| Ada berapa baris? | `har_query_body(id, path="$.data.data[*]", aggregate="count")` |
-| Auditee apa saja dan berapa barisnya? | `har_query_body(id, path="$.data.data[*].uic", aggregate="distinct")` |
-| Total temuan per auditee? | `har_query_body(id, path="$.data.data[*]", aggregate="sum", valueField="jumlah", groupBy="uic")` |
-| Hanya `uic` dan `jumlah` per baris? | `har_query_body(id, path="$.data.data[*]", fields=["uic","jumlah"])` |
-| Apakah semua baris milik debitur X? | `har_query_body(id, path="$.data.data[*]", where=["namaDebitur notContains X"])`; `matched` 0 berarti semua baris memuat X |
-| Isi `auditeeIds` di request? | `har_query_body(id, source="request", path="$.auditeeIds")` |
+| What is the body structure? | `har_query_body(id, mode="structure")` |
+| How many rows are there? | `har_query_body(id, path="$.data.data[*]", aggregate="count")` |
+| Which teams appear, and how many rows does each have? | `har_query_body(id, path="$.data.data[*].team", aggregate="distinct")` |
+| What is the total count per team? | `har_query_body(id, path="$.data.data[*]", aggregate="sum", valueField="count", groupBy="team")` |
+| Return only `team` and `count` per row? | `har_query_body(id, path="$.data.data[*]", fields=["team","count"])` |
+| Do all rows belong to team OPS? | `har_query_body(id, path="$.data.data[*]", where=["team != OPS"])`; `matched` = 0 means no rows violate the rule |
+| Which `teamIds` were sent in the request? | `har_query_body(id, source="request", path="$.teamIds")` |
 
 ### `har_trace_flow`
 
-Timeline kronologis yang dikelompokkan menjadi grup. Grup baru dimulai bila sebuah request berjalan lebih dari `gapMs`
-(default 800 ms) setelah semua request sebelumnya selesai. Setiap grup biasanya sama dengan satu aksi user (klik, load
-halaman), tetapi ini **heuristik**: kedekatan waktu tidak membuktikan dua request berasal dari aksi yang sama.
+A chronological timeline divided into groups. A new group starts when a request begins more than `gapMs`
+(default 800 ms) after all previous requests have finished. A group often corresponds to one user action (a click or page
+load), but this is a **heuristic**: proximity in time does not prove that two requests came from the same action.
 
-Isi hasil: per grup `start`/`end`, `durationMs`, `gapBeforeMs`, jumlah call/gagal/lambat, `firstFailure`, dan daftar call
-(offset ms dari awal grup, status, durasi, flags termasuk `slow`; maks 25 per grup). Hubungan yang didukung data dilaporkan
-terpisah di `confirmedLinks` (nilai header trace/korelasi yang sama, target redirect), sedangkan `failureStreaks` berisi
-kegagalan beruntun. Aset statis (gambar, font, CSS, JS) dan URL `data:` disembunyikan secara default (`includeStatic`).
-Opsi lain: `from`/`to`, `pathContains`, `slowMs`, paging grup `offset`/`limit`.
+Results include, per group: `start`/`end`, `durationMs`, `gapBeforeMs`, call/failure/slow-call counts, `firstFailure`, and a list
+of calls (offset in ms from the group start, status, duration, and flags including `slow`; at most 25 per group). Links supported
+by the data are reported separately in `confirmedLinks` (matching trace/correlation header values, redirect targets), while
+`failureStreaks` lists consecutive failures. Static assets (images, fonts, CSS, JS) and `data:` URLs are hidden by default
+(`includeStatic`). Other options: `from`/`to`, `pathContains`, `slowMs`, group pagination with `offset`/`limit`.
 
 ### `har_compare_entries`
 
-Diff dua entry dari capture yang sama atau berbeda:
-- `differences` (ringkasan satu baris), status, query param, dan header request/response.
-- Header yang berubah di setiap request (`date`, `etag`, `x-request-id`, `traceparent`, ...) diabaikan kecuali
-  `includeVolatileHeaders`; jumlahnya ada di `ignoredHeaderChanges`.
-- Body JSON di-diff per path (`added`, `removed`, `changed`, `typeChanged`; array per index, perubahan panjang dilaporkan
-  sebagai `$.x.length`). Body teks lain melaporkan posisi pertama yang berbeda beserta potongan konteks.
-- `ignorePaths` (mis. `["$.meta.timestamp", "$.data[*].updatedAt"]`) melewati field yang memang selalu berubah.
-- Nilai header/query sensitif tetap diredaksi; `fp` yang sama berarti nilainya sama.
+Diff two entries from the same capture or different captures:
+
+- `differences` (a one-line summary), status, query parameters, and request/response headers.
+- Headers that change with each request (`date`, `etag`, `x-request-id`, `traceparent`, ...) are ignored unless
+  `includeVolatileHeaders` is enabled; their count is reported in `ignoredHeaderChanges`.
+- JSON bodies are diffed by path (`added`, `removed`, `changed`, `typeChanged`; arrays by index, length changes reported
+  as `$.x.length`). Other text bodies report the first differing position with a context snippet.
+- `ignorePaths` (for example, `["$.meta.timestamp", "$.data[*].updatedAt"]`) skips fields expected to change.
+- Sensitive header/query values remain redacted; matching `fp` values indicate matching original values.
 
 ### `har_compare_captures`
 
-Membandingkan call yang sama di dua HAR yang sudah dibuka, mis. **sebelum dan sesudah perbaikan**:
-- Call dipasangkan berdasarkan method + path + query string yang diurutkan (host diabaikan, jadi DEV vs staging tetap
-  cocok), sesuai urutan kemunculan.
-- Per pasangan: status A/B, durasi, request body sama/berbeda, response body sama/berbeda (JSON dibandingkan per
-  struktur) dan jumlah diff. Pasangan yang berbeda diurutkan paling atas: perubahan status dulu, lalu respons, lalu request.
-- `onlyInA` / `onlyInB` berisi call yang tidak punya pasangan.
-- Opsi: `pathContains`, `method`, `ignorePaths`, `differentOnly`, `includeStatic`, paging.
-- Untuk melihat detail satu pasangan, lanjutkan dengan `har_compare_entries`.
+Compare matching calls across two opened HAR files, for example **before and after a fix**:
+
+- Calls are paired by method + path + sorted query string (host is ignored, so development and staging can match),
+  in order of occurrence.
+- Each pair includes status A/B, duration, whether request and response bodies match (JSON is compared structurally),
+  and a diff count. Different pairs are sorted first: status changes, then response changes, then request changes.
+- `onlyInA` / `onlyInB` contain calls without a match.
+- Options: `pathContains`, `method`, `ignorePaths`, `differentOnly`, `includeStatic`, pagination.
+- For details about one pair, follow up with `har_compare_entries`.
 
 ### `har_repro`
 
-Template reproduksi untuk maksimal 10 entry, diurutkan kronologis. **Tidak ada request yang dikirim.**
-- Format `http` (default; untuk REST Client VS Code / IntelliJ HTTP Client, tidak bergantung shell) atau `curl` (quoting bash;
-  di PowerShell gunakan `curl.exe` dan sesuaikan quoting).
-- Header, cookie, dan query param sensitif, serta field body JSON/form yang terlihat rahasia (`password`, `token`, `secret`,
-  `otp`, `pin`, ...), diganti `{{placeholder}}` dan didaftarkan di `variables`.
-- Header yang dikelola browser atau selalu berubah dibuang. Mode minimal hanya menyimpan `content-type`, `accept`,
-  `accept-language`, header `x-*` non-volatile, dan placeholder rahasia. Pakai `allHeaders=true` untuk semua header non-rahasia.
-- `dependencies`: nilai di request (query, header `x-*`/auth, field body) yang pertama kali muncul di respons sebelumnya,
-  mis. token dari login atau ID dari pembuatan order. Nilai rahasia ditampilkan dalam bentuk teredaksi.
-- Request yang direkam belum tentu bisa diulang: sesi, CSRF token, cookie, atau state server mungkin sudah berubah.
+Reproduction templates for up to 10 entries, sorted chronologically. **No requests are sent.**
 
-## Contoh pertanyaan ke agent
+- Formats: `http` (default; for VS Code REST Client / IntelliJ HTTP Client, independent of the shell) or `curl` (Bash quoting;
+  use `curl.exe` in PowerShell and adjust quoting).
+- Sensitive headers, cookies, and query parameters, as well as secret-looking JSON/form body fields (`password`, `token`,
+  `secret`, `otp`, `pin`, ...), are replaced with `{{placeholder}}` values listed in `variables`.
+- Browser-managed and volatile headers are removed. Minimal mode retains only `content-type`, `accept`, `accept-language`,
+  non-volatile `x-*` headers, and secret placeholders. Set `allHeaders=true` to retain all non-secret headers.
+- `dependencies`: request values (query parameters, `x-*`/auth headers, body fields) first seen in an earlier response,
+  such as a login token or the ID of a newly created order. Secret values are shown in redacted form.
+- Recorded requests may not be reproducible: sessions, CSRF tokens, cookies, or server state may have changed.
 
-- "Buka HAR terbaru dan rangkum request yang gagal."
+## Example prompts for your agent
+
+- "Open the latest HAR and summarize failed requests."
   → `har_list` → `har_open` → `har_overview` → `har_search(failedOnly=true)`
-- "Apa saja yang terjadi saat saya klik Simpan?" → `har_trace_flow` → lihat grup yang berisi call simpan
-- "Kenapa pembayaran gagal?"
+- "What happened when I clicked Save?" → `har_trace_flow` → inspect the group containing the save calls
+- "Why did the payment fail?"
   → `har_search(failedOnly=true)` → `har_query_body(id, fields=["errorCode","message"])` →
-  `har_search(correlationId="corr-77")` untuk request lain dengan correlation ID yang sama
-- "Bandingkan checkout yang sukses dengan yang gagal." → `har_compare_entries(idSukses, idGagal)`
-- "Apakah respons berubah setelah perbaikan?" → `har_open(sebelum.har)`, `har_open(sesudah.har)` →
-  `har_compare_captures(a, b, differentOnly=true)` → `har_compare_entries` untuk pasangan yang berbeda
-- "Pastikan semua baris di respons ini milik auditee X." → `har_query_body(id, path="$.data[*]", where=["uic != X"])`
-- "Request mana yang mengirim ID auditee X?" → `har_search(bodyContains="X", bodySide="request")`
-- "Buatkan request untuk mengulang login lalu ambil profil." → `har_repro([idLogin, idProfil])`
+  `har_search(correlationId="corr-77")` for other requests with the same correlation ID
+- "Compare a successful checkout with a failed one." → `har_compare_entries(successId, failureId)`
+- "Did the response change after the fix?" → `har_open(before.har)`, `har_open(after.har)` →
+  `har_compare_captures(a, b, differentOnly=true)` → `har_compare_entries` for differing pairs
+- "Check that every row in this response belongs to team OPS." → `har_query_body(id, path="$.data[*]", where=["team != OPS"])`
+- "Which request sent team ID X?" → `har_search(bodyContains="X", bodySide="request")`
+- "Generate requests to repeat the login and then fetch the profile." → `har_repro([loginId, profileId])`
 
-## Performa
+## Performance
 
-Diukur dengan [scripts/bench/Bench.cs](scripts/bench/Bench.cs) pada HAR sintetis (respons JSON 6–18 KB per entry):
+Measured using [scripts/bench/Bench.cs](scripts/bench/Bench.cs) with synthetic HAR files (6–18 KB JSON responses per entry):
 
-| Ukuran HAR | Entry | Load (baca + parse + index) | Memori (heap) | `bodyContains` semua body | Query lain |
+| HAR size | Entries | Load (read + parse + index) | Memory (heap) | `bodyContains` across all bodies | Other queries |
 |---|---|---|---|---|---|
-| 150 MB | 9.911 | 1,2 s | 175 MB (1,17×) | 0,29 s | ≤ 0,11 s |
-| 400 MB | 26.278 | 2,2 s | 457 MB (1,14×) | 0,79 s | ≤ 0,2 s |
+| 150 MB | 9,911 | 1.2 s | 175 MB (1.17×) | 0.29 s | ≤ 0.11 s |
+| 400 MB | 26,278 | 2.2 s | 457 MB (1.14×) | 0.79 s | ≤ 0.2 s |
 
-`har_query_body` pada body yang sudah di-cache memakan beberapa ms (parse pertama ±25–45 ms). Memori bersifat per proses,
-jadi setiap sesi yang membuka HAR besar memegang salinannya sendiri. Ini alasan batas default 256 MB.
+`har_query_body` takes a few milliseconds for cached bodies (initial parse: approximately 25–45 ms). Memory is per process,
+so every session opening a large HAR holds its own copy. This is why the default file size limit is 256 MB.
 
 ```powershell
 dotnet run scripts/bench/Bench.cs -- $env:TEMP\harscope-bench 150
 ```
 
-## Privasi dan keamanan
+## Privacy and security
 
-- Server hanya berjalan lokal: tidak ada telemetry, upload, atau request jaringan keluar. File HAR dibaca read-only.
-  `har_repro` hanya membuat teks dan tidak pernah mengirim request.
-- Akses file dibatasi ke `HAR_ROOT`. Path absolut, `..`, alternate data stream (`:`), file non-`.har`, serta
-  symlink/junction yang mengarah ke luar root ditolak. `har_list` tidak mengikuti link.
-- **Redaksi (default aktif)** berlaku untuk nilai header (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, nama yang
-  mengandung `token`/`secret`/`password`/`session`, dll.), semua nilai cookie, query param sensitif (`access_token`,
-  `api_key`, `code`, `signature`, dll.), dan nilai yang berbentuk `Bearer …`/`Basic …`/JWT.
-  Format hasilnya `[REDACTED len=142 fp=a1b2c3d4]`. `fp` adalah HMAC dengan kunci acak per proses: dua nilai yang sama
-  menghasilkan `fp` yang sama dalam satu sesi server, tetapi tidak bisa dicocokkan di luar sesi itu.
-- **Body request/response tidak diredaksi** di `har_get_entry`, `har_query_body`, dan `har_compare_*`. Password atau token
-  di dalam body (mis. body login) bisa terlihat oleh agent. Pengecualiannya `har_repro`, yang mengganti field body yang
-  terlihat rahasia dengan placeholder. Jangan memakai HAR berisi kredensial produksi yang sensitif.
-- Log hanya ditulis ke stderr (stdout khusus untuk protokol MCP) dan tidak pernah berisi header atau body.
-- Isi HAR diperlakukan sebagai data tidak tepercaya. Deskripsi tool dan server instructions mengingatkan agent bahwa teks
-  di dalam HAR bukan instruksi.
-- Ekspor HAR yang "sudah disanitasi" oleh browser tetap bisa berisi data sensitif di body atau URL.
+- The server runs locally: no telemetry, uploads, or outbound network requests. HAR files are read-only.
+  `har_repro` only generates text and never sends requests.
+- File access is restricted to `HAR_ROOT`. Absolute paths, `..`, alternate data streams (`:`), non-`.har` files, and
+  symlinks/junctions pointing outside the root are rejected. `har_list` does not follow links.
+- **Redaction (enabled by default)** covers header values (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, names
+  containing `token`/`secret`/`password`/`session`, etc.), all cookie values, sensitive query parameters (`access_token`,
+  `api_key`, `code`, `signature`, etc.), and values resembling `Bearer …`/`Basic …`/JWT credentials.
+  Results use `[REDACTED len=142 fp=a1b2c3d4]`. `fp` is an HMAC with a random per-process key: matching values produce the
+  same `fp` within one server session, but cannot be correlated across sessions using that fingerprint.
+- **Request/response bodies are not redacted** in `har_get_entry`, `har_query_body`, or `har_compare_*`. Passwords or tokens
+  in bodies (for example, a login body) may be visible to the agent. The exception is `har_repro`, which replaces
+  secret-looking body fields with placeholders. Avoid HAR files containing sensitive production credentials.
+- Logs are written only to stderr (stdout is reserved for the MCP protocol) and never contain headers or bodies.
+- HAR contents are treated as untrusted data. Tool descriptions and server instructions remind the agent that text
+  inside a HAR file is not an instruction.
+- Even browser-sanitized HAR exports may contain sensitive data in bodies or URLs.
 
-## Keterbatasan
+## Limitations
 
-- **Memori**: seluruh file dimuat ke memori (±1,15× ukuran file per capture yang terbuka, per sesi). Belum ada streaming
-  parser atau index persisten (SQLite).
-- `bodyContains` adalah pencocokan teks biasa (case-insensitive), bukan pencarian per field JSON. Untuk menyaring
-  berdasarkan nilai field, cari kandidat dengan `bodyContains`, lalu periksa dengan `har_query_body` + `where`.
-- `har_query_body`, diff body, dan dependency di `har_repro` hanya untuk body JSON. Body XML, HTML, dan form dibaca
-  sebagai teks lewat `har_get_entry` (diff teks hanya melaporkan posisi pertama yang berbeda).
-- Diff array JSON per index: elemen yang hanya bergeser urutan terlihat sebagai banyak perubahan.
-- Pemasangan call di `har_compare_captures` mengandalkan method + path + query. Call ke endpoint yang sama dengan
-  parameter yang selalu berubah (mis. cache buster `?_=123`) tidak akan berpasangan.
-- Pengelompokan `har_trace_flow` murni berdasarkan waktu; request background (polling, analytics) bisa ikut masuk ke grup.
-- Filter waktu memakai `startedDateTime` dari HAR. Entry tanpa timestamp valid diurutkan paling akhir dan tidak tampil di
+- **Memory**: the entire file is loaded into memory (approximately 1.15× the file size per open capture, per session).
+  There is no streaming parser or persistent index (SQLite) yet.
+- `bodyContains` performs plain, case-insensitive text matching, not JSON field queries. To filter by field values, find
+  candidates with `bodyContains`, then inspect them with `har_query_body` + `where`.
+- `har_query_body`, JSON body diffs, and dependency detection in `har_repro` work with JSON bodies. XML, HTML, and form
+  bodies can be read as text with `har_get_entry` (text diffs report only the first differing position).
+- JSON arrays are diffed by index: reordering elements can appear as many changes.
+- `har_compare_captures` pairs calls by method + path + query. Calls to the same endpoint with constantly changing
+  parameters (for example, a cache buster `?_=123`) will not match.
+- `har_trace_flow` groups requests solely by timing; background requests (polling, analytics) may be included in a group.
+- Time filters use `startedDateTime` from the HAR. Entries without a valid timestamp sort last and are omitted from
   `har_trace_flow`.
-- Entry ID terikat ke isi file. Bila file di-overwrite dengan capture lain, ID lama tidak lagi bermakna (ditandai lewat
-  warning dan `revision`).
-- Tidak ada replay request. Itu butuh desain keamanan tersendiri (target yang diizinkan, konfirmasi eksplisit).
+- Entry IDs are tied to the file contents. If a file is overwritten with another capture, old IDs lose their meaning
+  (reported through warnings and `revision`).
+- Requests are not replayed. Replay would require a separate security design (allowed targets, explicit confirmation).

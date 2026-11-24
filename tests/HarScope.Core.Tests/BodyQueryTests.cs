@@ -5,14 +5,14 @@ namespace HarScope.Core.Tests;
 
 public class BodyQueryTests
 {
-    /// <summary>A dashboard-like response: 3 auditees × risks, plus an error-free envelope.</summary>
+    /// <summary>A dashboard-like response: 3 teams × risks, plus an error-free envelope.</summary>
     private const string DashboardJson = """
-        {"data":{"tahun":2025,"data":[
-          {"uic":"AML","risiko":"Operasional","jumlah":10},
-          {"uic":"AML","risiko":"Kepatuhan","jumlah":26},
-          {"uic":"AI","risiko":"Operasional","jumlah":50},
-          {"uic":"AI","risiko":"Strategis","jumlah":31},
-          {"uic":"IT","risiko":"Operasional","jumlah":7,"note":null}
+        {"data":{"year":2025,"data":[
+          {"team":"OPS","risk":"Operational","count":10},
+          {"team":"OPS","risk":"Compliance","count":26},
+          {"team":"ENG","risk":"Operational","count":50},
+          {"team":"ENG","risk":"Strategic","count":31},
+          {"team":"IT","risk":"Operational","count":7,"note":null}
         ]},"errors":null,"meta":{"weird key":"x"}}
         """;
 
@@ -44,19 +44,19 @@ public class BodyQueryTests
     {
         var (t, s) = Setup(DashboardJson);
         using var _ = t;
-        var r = Query(t, s, new BodyQuery { Path = "$.data.tahun" });
+        var r = Query(t, s, new BodyQuery { Path = "$.data.year" });
 
         Assert.True(r.Available);
         Assert.Equal(1, r.Matched);
         var v = Assert.Single(r.Values!);
-        Assert.Equal("$.data.tahun", v.Path);
+        Assert.Equal("$.data.year", v.Path);
         Assert.Equal("2025", Json(v.Value));
     }
 
     [Theory]
-    [InlineData("$.data.data[0].uic", "\"AML\"")]
-    [InlineData("data.data[-1].uic", "\"IT\"")]
-    [InlineData("$['data']['data'][2]['jumlah']", "50")]
+    [InlineData("$.data.data[0].team", "\"OPS\"")]
+    [InlineData("data.data[-1].team", "\"IT\"")]
+    [InlineData("$['data']['data'][2]['count']", "50")]
     [InlineData("$.meta['weird key']", "\"x\"")]
     [InlineData("$.errors", "null")]
     public void Supports_documented_path_syntax(string path, string expected)
@@ -73,20 +73,20 @@ public class BodyQueryTests
         var (t, s) = Setup(DashboardJson);
         using var _ = t;
 
-        var all = Query(t, s, new BodyQuery { Path = "$.data.data[*].uic" });
+        var all = Query(t, s, new BodyQuery { Path = "$.data.data[*].team" });
         Assert.Equal(5, all.Matched);
-        Assert.Equal(["AML", "AML", "AI", "AI", "IT"], all.Values!.Select(v => (string)v.Value!).ToArray());
-        Assert.Equal("$.data.data[3].uic", all.Values![3].Path);
+        Assert.Equal(["OPS", "OPS", "ENG", "ENG", "IT"], all.Values!.Select(v => (string)v.Value!).ToArray());
+        Assert.Equal("$.data.data[3].team", all.Values![3].Path);
 
-        var slice = Query(t, s, new BodyQuery { Path = "$.data.data[1:3].risiko" });
-        Assert.Equal(["$.data.data[1].risiko", "$.data.data[2].risiko"], slice.Values!.Select(v => v.Path).ToArray());
+        var slice = Query(t, s, new BodyQuery { Path = "$.data.data[1:3].risk" });
+        Assert.Equal(["$.data.data[1].risk", "$.data.data[2].risk"], slice.Values!.Select(v => v.Path).ToArray());
 
         var objectWildcard = Query(t, s, new BodyQuery { Path = "$.data.*" });
         Assert.Equal(2, objectWildcard.Matched);
     }
 
     [Theory]
-    [InlineData("$..uic")]
+    [InlineData("$..team")]
     [InlineData("$.data[?(@.x)]")]
     [InlineData("$.data[0:4:2]")]
     [InlineData("$.data[")]
@@ -104,9 +104,9 @@ public class BodyQueryTests
     {
         var (t, s) = Setup(DashboardJson);
         using var _ = t;
-        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*]", Fields = ["uic", "jumlah", "missing"] });
+        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*]", Fields = ["team", "count", "missing"] });
 
-        Assert.Equal("""{"uic":"AML","jumlah":10,"missing":null}""", Json(r.Values![0].Value));
+        Assert.Equal("""{"team":"OPS","count":10,"missing":null}""", Json(r.Values![0].Value));
     }
 
     [Fact]
@@ -114,7 +114,7 @@ public class BodyQueryTests
     {
         var (t, s) = Setup(DashboardJson);
         using var _ = t;
-        var page = Query(t, s, new BodyQuery { Path = "$.data.data[*].jumlah", Limit = 2, Offset = 2 });
+        var page = Query(t, s, new BodyQuery { Path = "$.data.data[*].count", Limit = 2, Offset = 2 });
 
         Assert.Equal(5, page.Matched);
         Assert.Equal(2, page.ReturnedCount);
@@ -133,7 +133,7 @@ public class BodyQueryTests
     {
         var (t, s) = Setup(DashboardJson);
         using var _ = t;
-        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*].jumlah", Aggregate = fn });
+        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*].count", Aggregate = fn });
 
         Assert.Null(r.Values);
         Assert.Equal((decimal)expected, r.Aggregate!.Value);
@@ -146,13 +146,13 @@ public class BodyQueryTests
         using var _ = t;
         var r = Query(t, s, new BodyQuery
         {
-            Path = "$.data.data[*]", Aggregate = BodyAggregate.Sum, ValueField = "jumlah", GroupBy = "uic",
+            Path = "$.data.data[*]", Aggregate = BodyAggregate.Sum, ValueField = "count", GroupBy = "team",
         });
 
         var a = r.Aggregate!;
         Assert.Equal(124, a.Value);
         Assert.Equal(3, a.TotalGroups);
-        Assert.Equal(["AI:81:2", "AML:36:2", "IT:7:1"], a.Groups!.Select(g => $"{g.Key}:{g.Value}:{g.Count}").ToArray());
+        Assert.Equal(["ENG:81:2", "OPS:36:2", "IT:7:1"], a.Groups!.Select(g => $"{g.Key}:{g.Value}:{g.Count}").ToArray());
     }
 
     [Fact]
@@ -160,10 +160,10 @@ public class BodyQueryTests
     {
         var (t, s) = Setup(DashboardJson);
         using var _ = t;
-        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*].risiko", Aggregate = BodyAggregate.Distinct });
+        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*].risk", Aggregate = BodyAggregate.Distinct });
 
         Assert.Equal(3, r.Aggregate!.TotalGroups);
-        Assert.Equal("Operasional", r.Aggregate.Groups![0].Key);
+        Assert.Equal("Operational", r.Aggregate.Groups![0].Key);
         Assert.Equal(3, r.Aggregate.Groups[0].Count);
     }
 
@@ -172,7 +172,7 @@ public class BodyQueryTests
     {
         var (t, s) = Setup(DashboardJson);
         using var _ = t;
-        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*].uic", Aggregate = BodyAggregate.Sum });
+        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*].team", Aggregate = BodyAggregate.Sum });
         Assert.Null(r.Aggregate!.Value);
         Assert.Equal(5, r.Aggregate.Skipped);
     }
@@ -186,10 +186,10 @@ public class BodyQueryTests
         var json = Json(r.Structure);
 
         Assert.Contains("\"length\":5", json);
-        Assert.Contains("\"uic\":\"string\"", json);
-        Assert.Contains("\"jumlah\":\"number\"", json);
+        Assert.Contains("\"team\":\"string\"", json);
+        Assert.Contains("\"count\":\"number\"", json);
         Assert.Contains("\"note\":\"null\"", json); // key seen only in a later item is merged in
-        Assert.DoesNotContain("AML", json);
+        Assert.DoesNotContain("OPS", json);
     }
 
     [Fact]
@@ -221,12 +221,12 @@ public class BodyQueryTests
     [Fact]
     public void Queries_the_request_body()
     {
-        var (t, s) = Setup(DashboardJson, """{"tahun":2025,"auditeeIds":["a","b"]}""");
+        var (t, s) = Setup(DashboardJson, """{"year":2025,"teamIds":["a","b"]}""");
         using var _ = t;
-        var r = Query(t, s, new BodyQuery { Side = BodySide.Request, Path = "$.auditeeIds", Aggregate = BodyAggregate.Count });
+        var r = Query(t, s, new BodyQuery { Side = BodySide.Request, Path = "$.teamIds", Aggregate = BodyAggregate.Count });
         Assert.Equal(1, r.Matched);
 
-        var ids = Query(t, s, new BodyQuery { Side = BodySide.Request, Path = "$.auditeeIds[*]" });
+        var ids = Query(t, s, new BodyQuery { Side = BodySide.Request, Path = "$.teamIds[*]" });
         Assert.Equal(2, ids.Matched);
     }
 
@@ -254,13 +254,13 @@ public class BodyQueryTests
     }
 
     [Theory]
-    [InlineData("jumlah > 20", 3)]
-    [InlineData("jumlah >= 31", 2)]
-    [InlineData("uic == 'AML'", 2)]
-    [InlineData("uic != AML", 3)]
-    [InlineData("risiko contains opera", 3)]
-    [InlineData("risiko notContains opera", 2)]
-    [InlineData("risiko startsWith Kep", 1)]
+    [InlineData("count > 20", 3)]
+    [InlineData("count >= 31", 2)]
+    [InlineData("team == 'OPS'", 2)]
+    [InlineData("team != OPS", 3)]
+    [InlineData("risk contains opera", 3)]
+    [InlineData("risk notContains opera", 2)]
+    [InlineData("risk startsWith Com", 1)]
     [InlineData("note exists", 0)]
     [InlineData("note notExists", 5)]
     [InlineData("missing == 1", 0)]
@@ -281,8 +281,8 @@ public class BodyQueryTests
         using var _ = t;
         var r = Query(t, s, new BodyQuery
         {
-            Path = "$.data.data[*]", Where = ["risiko == Operasional", "jumlah < 50"],
-            Aggregate = BodyAggregate.Sum, ValueField = "jumlah",
+            Path = "$.data.data[*]", Where = ["risk == Operational", "count < 50"],
+            Aggregate = BodyAggregate.Sum, ValueField = "count",
         });
         Assert.Equal(2, r.Matched);
         Assert.Equal(17, r.Aggregate!.Value);
@@ -293,16 +293,16 @@ public class BodyQueryTests
     {
         var (t, s) = Setup(DashboardJson);
         using var _ = t;
-        Assert.Equal(1, Query(t, s, new BodyQuery { Path = "$.data.data[*].jumlah", Where = ["@ > 40"] }).Matched);
+        Assert.Equal(1, Query(t, s, new BodyQuery { Path = "$.data.data[*].count", Where = ["@ > 40"] }).Matched);
 
-        var none = Query(t, s, new BodyQuery { Path = "$.data.data[*]", Where = ["uic == NOPE"] });
+        var none = Query(t, s, new BodyQuery { Path = "$.data.data[*]", Where = ["team == NOPE"] });
         Assert.Contains(none.Warnings!, w => w.Contains("where filter"));
     }
 
     [Theory]
-    [InlineData("jumlah")]
-    [InlineData("jumlah ~ 3")]
-    [InlineData("jumlah >")]
+    [InlineData("count")]
+    [InlineData("count ~ 3")]
+    [InlineData("count >")]
     [InlineData("note exists yes")]
     public void Invalid_where_is_rejected(string where)
     {

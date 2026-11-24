@@ -153,10 +153,10 @@ public sealed partial class HarTools(
         [Description("'response' (default) or 'request'.")] string source = "response",
         [Description("'values' (default) or 'structure'.")] string mode = "values",
         [Description("Relative fields to project from each match, e.g. ['errorCode','detail.message'].")] string[]? fields = null,
-        [Description("Row filters applied to each match before projection/aggregation, ANDed: '<field> <op> [value]'. Ops: ==, !=, >, >=, <, <=, contains, notContains, startsWith (case-insensitive text), exists, notExists. Field is relative to the match ('@' = the match). E.g. [\"status == 'FAILED'\", \"jumlah > 10\", \"namaDebitur notContains SARI\"].")] string[]? where = null,
+        [Description("Row filters applied to each match before projection/aggregation, ANDed: '<field> <op> [value]'. Ops: ==, !=, >, >=, <, <=, contains, notContains, startsWith (case-insensitive text), exists, notExists. Field is relative to the match ('@' = the match). E.g. [\"status == 'FAILED'\", \"amount > 10\", \"customerName notContains SAMPLE\"].")] string[]? where = null,
         [Description("'count', 'sum', 'min', 'max', 'avg' or 'distinct'. Omit to return values.")] string? aggregate = null,
         [Description("Relative path inside each match to aggregate, e.g. 'amount'. Default: the match itself.")] string? valueField = null,
-        [Description("Relative path inside each match to group the aggregate by, e.g. 'auditeeId'.")] string? groupBy = null,
+        [Description("Relative path inside each match to group the aggregate by, e.g. 'teamId'.")] string? groupBy = null,
         [Description("Matches to skip (use nextOffset).")] int offset = 0,
         [Description("Matches per page, default 20, maximum 200.")] int? limit = null) => Run(() =>
     {

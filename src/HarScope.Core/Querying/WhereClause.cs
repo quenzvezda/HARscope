@@ -5,7 +5,7 @@ namespace HarScope.Core.Querying;
 
 /// <summary>
 /// One row filter for har_query_body, written as "&lt;field&gt; &lt;op&gt; [value]", e.g.
-/// <c>status == 'FAILED'</c>, <c>jumlah &gt;= 10</c>, <c>namaDebitur notContains SYAFRIANDI</c>, <c>errorCode exists</c>.
+/// <c>status == 'FAILED'</c>, <c>amount &gt;= 10</c>, <c>customerName notContains SAMPLE</c>, <c>errorCode exists</c>.
 /// The field is a path relative to each match ("@" means the match itself).
 /// Missing fields never satisfy ==, &lt;, &gt;, contains, startsWith or exists; they do satisfy != and notContains.
 /// </summary>
@@ -141,5 +141,5 @@ public sealed class WhereClause
         new(ErrorCodes.InvalidArgument,
             $"Invalid where '{expression}': {detail}. Form: '<field> <op> [value]' with op one of " +
             "==, !=, >, >=, <, <=, contains, notContains, startsWith, exists, notExists. " +
-            "Example: \"status == 'FAILED'\", \"amount > 100\", \"name notContains SARI\".");
+            "Example: \"status == 'FAILED'\", \"amount > 100\", \"customerName notContains SAMPLE\".");
 }
