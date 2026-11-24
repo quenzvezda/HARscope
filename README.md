@@ -360,3 +360,10 @@ dotnet run scripts/bench/Bench.cs -- $env:TEMP\harscope-bench 150
 - Entry IDs are tied to the file contents. If a file is overwritten with another capture, old IDs lose their meaning
   (reported through warnings and `revision`).
 - Requests are not replayed. Replay would require a separate security design (allowed targets, explicit confirmation).
+
+## License
+
+Copyright 2026 Rama Almer Felix.
+
+HARscope is licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+Third-party dependencies remain under their respective licenses.
