@@ -16,6 +16,8 @@ public sealed record BodyQuery
     public BodyQueryMode Mode { get; init; } = BodyQueryMode.Values;
     /// <summary>Relative paths projected from every match (e.g. ["errorCode", "detail.message"]).</summary>
     public IReadOnlyList<string>? Fields { get; init; }
+    /// <summary>Row filters ("field op value"), combined with AND, applied to every match before anything else.</summary>
+    public IReadOnlyList<string>? Where { get; init; }
     public BodyAggregate Aggregate { get; init; } = BodyAggregate.None;
     /// <summary>Relative path inside each match whose value is aggregated (default: the match itself).</summary>
     public string? ValueField { get; init; }
@@ -47,6 +49,8 @@ public sealed record BodyQueryResult
     public string? Reason { get; init; }
     public string? MimeType { get; init; }
     public int? Matched { get; init; }
+    /// <summary>Matches before the where filter (only set when a filter was given).</summary>
+    public int? Scanned { get; init; }
     public int? Offset { get; init; }
     public int? ReturnedCount { get; init; }
     public bool? HasMore { get; init; }
@@ -62,8 +66,19 @@ public sealed record BodyQueryResult
 /// Level 4: targeted access to JSON bodies — single values, projections, structure previews and
 /// simple aggregates — so the caller never needs to page through a large body.
 /// </summary>
-public sealed class BodyQueryService(HarScopeOptions options)
+public sealed class BodyQueryService
 {
+    private readonly HarScopeOptions options;
+    private readonly JsonBodyCache cache;
+
+    public BodyQueryService(HarScopeOptions options, JsonBodyCache cache)
+    {
+        this.options = options;
+        this.cache = cache;
+    }
+
+    public BodyQueryService(HarScopeOptions options) : this(options, new JsonBodyCache()) { }
+
     private const int DefaultLimit = 20;
     private const int MaxLimit = 200;
     private const int MaxGroups = 100;
@@ -75,11 +90,13 @@ public sealed class BodyQueryService(HarScopeOptions options)
     public BodyQueryResult Query(CaptureHandle handle, HarEntry entry, BodyQuery query)
     {
         var path = JsonPath.Parse(query.Path);
+        var where = query.Where?.Where(w => !string.IsNullOrWhiteSpace(w)).Select(WhereClause.Parse).ToList();
         Validate(query);
 
         var source = query.Side == BodySide.Request ? "request" : "response";
         var warnings = new List<string>(handle.Warnings);
-        var body = BodyReader.Read(entry, query.Side, options.MaxValueChars);
+        var parsed = cache.Get(handle.Capture, entry, query.Side, options.MaxValueChars);
+        var body = parsed.Body;
 
         BodyQueryResult Unavailable(string reason) => new()
         {
@@ -87,32 +104,27 @@ public sealed class BodyQueryService(HarScopeOptions options)
             Warnings = warnings.Count > 0 ? warnings : null,
         };
 
-        if (body.Text is null)
-            return Unavailable(body.Reason ?? (body.Params is not null
-                ? "Body is form parameters, not JSON; use har_get_entry with sections=['requestBody']."
-                : "Body is not available."));
+        if (parsed.Root is not { } root) return Unavailable(parsed.Error!);
 
-        JsonDocument doc;
-        try
         {
-            doc = JsonDocument.Parse(body.Text, new JsonDocumentOptions { MaxDepth = 256, AllowTrailingCommas = true });
-        }
-        catch (JsonException ex)
-        {
-            return Unavailable($"Body is not valid JSON (mime {body.MimeType ?? "unknown"}; line {ex.LineNumber + 1}). " +
-                               "Use har_get_entry with a body section to read it as text.");
-        }
-
-        using (doc)
-        {
-            var matches = path.Evaluate(doc.RootElement, out var capped);
+            var matches = path.Evaluate(root, out var capped);
             if (capped) warnings.Add($"Path matched more than {JsonPath.MaxMatches} nodes; only the first {JsonPath.MaxMatches} were used.");
-            if (matches.Count == 0) warnings.Add("Path matched nothing. Try mode='structure' with a shorter path to see what exists.");
+            int? scanned = null;
+            if (where is { Count: > 0 })
+            {
+                scanned = matches.Count;
+                matches = matches.Where(m => where.All(w => w.Matches(m.Value))).ToList();
+            }
+            if (matches.Count == 0)
+                warnings.Add(scanned is > 0
+                    ? $"None of the {scanned} matches passed the where filter."
+                    : "Path matched nothing. Try mode='structure' with a shorter path to see what exists.");
 
             var result = new BodyQueryResult
             {
                 EntryId = entry.Id, Source = source, Path = path.Text, Available = true, MimeType = body.MimeType,
                 Matched = matches.Count,
+                Scanned = scanned,
             };
 
             if (query.Mode == BodyQueryMode.Structure)

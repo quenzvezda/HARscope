@@ -80,6 +80,21 @@ public class SearchTests
     }
 
     [Fact]
+    public void Data_urls_are_hidden_unless_requested()
+    {
+        using var t = new TestRoot();
+        t.Write("data.har", HarText.Of(
+            HarText.Entry("https://x.test/api"),
+            HarText.Entry("data:image/png;base64,iVBORw0KGgo=")));
+        var h = t.Store.Open("data.har");
+
+        var hidden = t.Search.Search(h, new SearchQuery());
+        Assert.Equal(1, hidden.TotalMatches);
+        Assert.Contains(hidden.Warnings!, w => w.Contains("data: URL"));
+        Assert.Equal(2, t.Search.Search(h, new SearchQuery { IncludeDataUrls = true }).TotalMatches);
+    }
+
+    [Fact]
     public void Paginates_with_offset_and_next_offset()
     {
         using var t = new TestRoot();

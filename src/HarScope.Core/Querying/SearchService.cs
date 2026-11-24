@@ -31,6 +31,8 @@ public sealed record SearchQuery
     /// <summary>Which body BodyContains looks at; null means request or response.</summary>
     public BodySide? BodySide { get; init; }
     public bool FailedOnly { get; init; }
+    /// <summary>Inline data: URLs (embedded images/fonts) are hidden unless this is true.</summary>
+    public bool IncludeDataUrls { get; init; }
     public SearchSort Sort { get; init; } = SearchSort.Time;
     public bool Descending { get; init; }
     public int Offset { get; init; }
@@ -62,8 +64,17 @@ public sealed class SearchService(HarScopeOptions options, Redactor redactor)
             limit = options.MaxSearchLimit;
         }
 
-        var matches = handle.Capture.Entries.Where(e => Matches(e, query));
+        var hiddenDataUrls = 0;
+        var matches = handle.Capture.Entries.Where(e =>
+        {
+            if (!Matches(e, query)) return false;
+            if (query.IncludeDataUrls || !e.Url.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return true;
+            hiddenDataUrls++;
+            return false;
+        });
         var ordered = Order(matches, query).ToList();
+        if (hiddenDataUrls > 0)
+            warnings.Add($"{hiddenDataUrls} inline data: URL entries hidden (includeDataUrls=true to show them).");
         var offset = Math.Max(0, query.Offset);
 
         var page = ordered.Skip(offset).Take(limit).Select(e => EntryRow.From(e, redactor)).ToList();

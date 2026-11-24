@@ -253,6 +253,65 @@ public class BodyQueryTests
         Assert.Equal(1, decoded.Matched);
     }
 
+    [Theory]
+    [InlineData("jumlah > 20", 3)]
+    [InlineData("jumlah >= 31", 2)]
+    [InlineData("uic == 'AML'", 2)]
+    [InlineData("uic != AML", 3)]
+    [InlineData("risiko contains opera", 3)]
+    [InlineData("risiko notContains opera", 2)]
+    [InlineData("risiko startsWith Kep", 1)]
+    [InlineData("note exists", 0)]
+    [InlineData("note notExists", 5)]
+    [InlineData("missing == 1", 0)]
+    [InlineData("missing != 1", 5)]
+    public void Where_filters_matches(string where, int expected)
+    {
+        var (t, s) = Setup(DashboardJson);
+        using var _ = t;
+        var r = Query(t, s, new BodyQuery { Path = "$.data.data[*]", Where = [where] });
+        Assert.Equal(expected, r.Matched);
+        Assert.Equal(5, r.Scanned);
+    }
+
+    [Fact]
+    public void Where_combines_with_and_and_feeds_aggregates()
+    {
+        var (t, s) = Setup(DashboardJson);
+        using var _ = t;
+        var r = Query(t, s, new BodyQuery
+        {
+            Path = "$.data.data[*]", Where = ["risiko == Operasional", "jumlah < 50"],
+            Aggregate = BodyAggregate.Sum, ValueField = "jumlah",
+        });
+        Assert.Equal(2, r.Matched);
+        Assert.Equal(17, r.Aggregate!.Value);
+    }
+
+    [Fact]
+    public void Where_on_scalars_uses_at_sign_and_reports_empty_result()
+    {
+        var (t, s) = Setup(DashboardJson);
+        using var _ = t;
+        Assert.Equal(1, Query(t, s, new BodyQuery { Path = "$.data.data[*].jumlah", Where = ["@ > 40"] }).Matched);
+
+        var none = Query(t, s, new BodyQuery { Path = "$.data.data[*]", Where = ["uic == NOPE"] });
+        Assert.Contains(none.Warnings!, w => w.Contains("where filter"));
+    }
+
+    [Theory]
+    [InlineData("jumlah")]
+    [InlineData("jumlah ~ 3")]
+    [InlineData("jumlah >")]
+    [InlineData("note exists yes")]
+    public void Invalid_where_is_rejected(string where)
+    {
+        var (t, s) = Setup(DashboardJson);
+        using var _ = t;
+        var ex = Assert.Throws<HarScopeException>(() => Query(t, s, new BodyQuery { Path = "$.data.data[*]", Where = [where] }));
+        Assert.Contains("Form:", ex.Message);
+    }
+
     [Fact]
     public void Path_matching_nothing_gives_a_hint()
     {

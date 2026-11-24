@@ -66,11 +66,13 @@ public sealed partial class Redactor
         return url[..(q + 1)] + string.Join('&', parts) + fragment;
     }
 
-    private bool IsSensitiveHeader(string name) =>
+    public bool IsSensitiveQueryParam(string name) => _options.QueryParamNames.Contains(name);
+
+    public bool IsSensitiveHeader(string name) =>
         _options.HeaderNames.Contains(name) ||
         _options.HeaderNameFragments.Any(f => name.Contains(f, StringComparison.OrdinalIgnoreCase));
 
-    private static bool LooksLikeSecret(string value) =>
+    public static bool LooksLikeSecret(string value) =>
         value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
         value.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase) ||
         JwtPattern().IsMatch(value);

@@ -33,7 +33,7 @@ public class StdioEndToEndTests
         await using var client = await ConnectAsync(f.Root);
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(["har_get_entry", "har_list", "har_open", "har_overview", "har_query_body", "har_search"],
+        Assert.Equal(["har_compare_captures", "har_compare_entries", "har_get_entry", "har_list", "har_open", "har_overview", "har_query_body", "har_repro", "har_search", "har_trace_flow"],
             tools.Select(t => t.Name).Order().ToArray());
         Assert.All(tools, t => Assert.False(string.IsNullOrWhiteSpace(t.Description)));
 
@@ -83,6 +83,65 @@ public class StdioEndToEndTests
         });
         using var sumDoc = JsonDocument.Parse(Text(sum));
         Assert.Equal(138.9m, sumDoc.RootElement.GetProperty("aggregate").GetProperty("value").GetDecimal());
+
+        var filtered = await client.CallToolAsync("har_query_body", new Dictionary<string, object?>
+        {
+            ["entryId"] = "checkout-flow:entry-4",
+            ["path"] = "$.items[*]",
+            ["where"] = new[] { "price > 60" },
+            ["fields"] = new[] { "sku" },
+        });
+        using var filteredDoc = JsonDocument.Parse(Text(filtered));
+        Assert.Equal(1, filteredDoc.RootElement.GetProperty("matched").GetInt32());
+
+        var flow = await client.CallToolAsync("har_trace_flow", new Dictionary<string, object?>());
+        using var flowDoc = JsonDocument.Parse(Text(flow));
+        Assert.Equal(7, flowDoc.RootElement.GetProperty("totalGroups").GetInt32());
+
+        var diff = await client.CallToolAsync("har_compare_entries", new Dictionary<string, object?>
+        {
+            ["entryIdA"] = "checkout-flow:entry-7",
+            ["entryIdB"] = "checkout-flow:entry-8",
+        });
+        Assert.Contains("status 200 -> 502", Text(diff));
+
+        var repro = await client.CallToolAsync("har_repro", new Dictionary<string, object?>
+        {
+            ["entryIds"] = new[] { "checkout-flow:entry-2" },
+        });
+        var reproText = Text(repro);
+        Assert.Contains("{{password}}", reproText);
+        Assert.DoesNotContain("hunter2", reproText);
+    }
+
+    [Fact]
+    public async Task Server_sends_usage_instructions()
+    {
+        using var f = new Fixture();
+        await using var client = await ConnectAsync(f.Root);
+
+        Assert.Contains("Do not read .har files directly", client.ServerInstructions);
+        Assert.Equal("0.3.0", client.ServerInfo.Version);
+    }
+
+    [Fact]
+    public async Task Compare_captures_over_stdio()
+    {
+        using var f = new Fixture();
+        File.Copy(Path.Combine(f.Root, "checkout-flow.har"), Path.Combine(f.Root, "checkout-copy.har"));
+        await using var client = await ConnectAsync(f.Root);
+
+        await client.CallToolAsync("har_open", new Dictionary<string, object?> { ["path"] = "checkout-flow.har" });
+        await client.CallToolAsync("har_open", new Dictionary<string, object?> { ["path"] = "checkout-copy.har" });
+        var result = await client.CallToolAsync("har_compare_captures", new Dictionary<string, object?>
+        {
+            ["captureA"] = "checkout-flow",
+            ["captureB"] = "checkout-copy",
+        });
+
+        using var doc = JsonDocument.Parse(Text(result));
+        Assert.Equal(0, doc.RootElement.GetProperty("differentPairs").GetInt32());
+        Assert.True(doc.RootElement.GetProperty("pairs").GetInt32() > 5);
     }
 
     [Fact]

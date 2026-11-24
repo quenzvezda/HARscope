@@ -1,4 +1,5 @@
 using HarScope.Core;
+using HarScope.Core.Analysis;
 using HarScope.Core.Indexing;
 using HarScope.Core.Querying;
 using HarScope.Core.Security;
@@ -24,12 +25,16 @@ public sealed class Fixture : IDisposable
     public HarTools CreateTools()
     {
         var redactor = new Redactor(Options.Redaction);
+        var cache = new JsonBodyCache();
         return new HarTools(
             new CaptureStore(Options),
             new OverviewService(redactor),
             new SearchService(Options, redactor),
             new EntryInspector(Options, redactor),
-            new BodyQueryService(Options),
+            new BodyQueryService(Options, cache),
+            new CompareService(Options, redactor, cache),
+            new FlowService(Options, redactor),
+            new ReproService(Options, redactor, cache),
             new OutputGuard(Options),
             NullLogger<HarTools>.Instance);
     }

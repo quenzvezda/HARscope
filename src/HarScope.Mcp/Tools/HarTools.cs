@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using HarScope.Core;
+using HarScope.Core.Analysis;
 using HarScope.Core.Indexing;
 using HarScope.Core.Querying;
 using Microsoft.Extensions.Logging;
@@ -13,12 +14,15 @@ namespace HarScope.Mcp.Tools;
 /// MCP adapter over HarScope.Core. Each tool returns compact JSON text and never the full HAR.
 /// </summary>
 [McpServerToolType]
-public sealed class HarTools(
+public sealed partial class HarTools(
     CaptureStore store,
     OverviewService overview,
     SearchService search,
     EntryInspector inspector,
     BodyQueryService bodyQuery,
+    CompareService compare,
+    FlowService flow,
+    ReproService repro,
     OutputGuard guard,
     ILogger<HarTools> logger)
 {
@@ -97,6 +101,7 @@ public sealed class HarTools(
         [Description("Case-insensitive text that must appear in the decoded request or response body (e.g. an ID or error code). Binary bodies are skipped.")] string? bodyContains = null,
         [Description("Body searched by bodyContains: 'request', 'response' or omitted for either.")] string? bodySide = null,
         [Description("Only failed entries: status 0, status >= 400, or a browser network error.")] bool failedOnly = false,
+        [Description("Include inline data: URL entries (hidden by default).")] bool includeDataUrls = false,
         [Description("Sort key: 'time' (default, chronological), 'duration' or 'status'.")] string sort = "time",
         [Description("Sort descending.")] bool descending = false,
         [Description("Number of matches to skip (use nextOffset from the previous page).")] int offset = 0,
@@ -110,7 +115,7 @@ public sealed class HarTools(
             From = ParseTime(from, nameof(from)), To = ParseTime(to, nameof(to)),
             RequestHeader = requestHeader, ResponseHeader = responseHeader, CorrelationId = correlationId,
             BodyContains = bodyContains, BodySide = bodySide is null ? null : ParseSide(bodySide),
-            FailedOnly = failedOnly, Sort = ParseSort(sort), Descending = descending, Offset = offset, Limit = limit,
+            FailedOnly = failedOnly, IncludeDataUrls = includeDataUrls, Sort = ParseSort(sort), Descending = descending, Offset = offset, Limit = limit,
         };
         return search.Search(store.Get(captureId), query);
     });
@@ -140,7 +145,7 @@ public sealed class HarTools(
                  "paths, paginated; 'fields' projects relative fields from each match (e.g. path='$.data[*]', " +
                  "fields=['id','status']); 'structure' returns keys/types/array lengths without values — use it first on an " +
                  "unknown body. Aggregates over matches: count, sum, min, max, avg, distinct (value counts), optionally " +
-                 "per 'groupBy' and on a 'valueField'. 'matched' is always the total number of matches. Non-JSON or missing " +
+                 "per 'groupBy' and on a 'valueField'. 'where' keeps only matches meeting all conditions; to verify a rule, filter for violations (e.g. where=['name notContains X']) and expect matched=0. 'matched' is the number of matches after where ('scanned' = before). Non-JSON or missing " +
                  "bodies return available=false with a reason. Bodies are not redacted." + UntrustedNote)]
     public string HarQueryBody(
         [Description("Entry ID from har_search, e.g. 'checkout:entry-42'.")] string entryId,
@@ -148,6 +153,7 @@ public sealed class HarTools(
         [Description("'response' (default) or 'request'.")] string source = "response",
         [Description("'values' (default) or 'structure'.")] string mode = "values",
         [Description("Relative fields to project from each match, e.g. ['errorCode','detail.message'].")] string[]? fields = null,
+        [Description("Row filters applied to each match before projection/aggregation, ANDed: '<field> <op> [value]'. Ops: ==, !=, >, >=, <, <=, contains, notContains, startsWith (case-insensitive text), exists, notExists. Field is relative to the match ('@' = the match). E.g. [\"status == 'FAILED'\", \"jumlah > 10\", \"namaDebitur notContains SARI\"].")] string[]? where = null,
         [Description("'count', 'sum', 'min', 'max', 'avg' or 'distinct'. Omit to return values.")] string? aggregate = null,
         [Description("Relative path inside each match to aggregate, e.g. 'amount'. Default: the match itself.")] string? valueField = null,
         [Description("Relative path inside each match to group the aggregate by, e.g. 'auditeeId'.")] string? groupBy = null,
@@ -166,6 +172,7 @@ public sealed class HarTools(
                 _ => throw new HarScopeException(ErrorCodes.InvalidArgument, "mode must be 'values' or 'structure'."),
             },
             Fields = fields,
+            Where = where,
             Aggregate = string.IsNullOrWhiteSpace(aggregate)
                 ? BodyAggregate.None
                 : Enum.TryParse<BodyAggregate>(aggregate.Trim(), ignoreCase: true, out var a) && a != BodyAggregate.None

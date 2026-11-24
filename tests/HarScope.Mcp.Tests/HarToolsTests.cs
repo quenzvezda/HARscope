@@ -16,7 +16,7 @@ public class HarToolsTests
             .Where(a => a is not null)
             .ToList();
 
-        Assert.Equal(["har_get_entry", "har_list", "har_open", "har_overview", "har_query_body", "har_search"],
+        Assert.Equal(["har_compare_captures", "har_compare_entries", "har_get_entry", "har_list", "har_open", "har_overview", "har_query_body", "har_repro", "har_search", "har_trace_flow"],
             tools.Select(t => t!.Name!).Order().ToArray());
         Assert.All(tools, t => Assert.True(t!.ReadOnly));
     }

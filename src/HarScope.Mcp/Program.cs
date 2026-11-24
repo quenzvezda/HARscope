@@ -1,7 +1,9 @@
 ﻿using HarScope.Core;
+using HarScope.Core.Analysis;
 using HarScope.Core.Indexing;
 using HarScope.Core.Querying;
 using HarScope.Core.Security;
+using HarScope.Mcp;
 using HarScope.Mcp.Configuration;
 using HarScope.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,11 +30,19 @@ builder.Services.AddSingleton<CaptureStore>();
 builder.Services.AddSingleton<OverviewService>();
 builder.Services.AddSingleton<SearchService>();
 builder.Services.AddSingleton<EntryInspector>();
-builder.Services.AddSingleton<BodyQueryService>();
+builder.Services.AddSingleton<JsonBodyCache>();
+builder.Services.AddSingleton<BodyQueryService>(sp => new BodyQueryService(options, sp.GetRequiredService<JsonBodyCache>()));
+builder.Services.AddSingleton<CompareService>();
+builder.Services.AddSingleton<FlowService>();
+builder.Services.AddSingleton<ReproService>();
 builder.Services.AddSingleton<OutputGuard>();
 
 builder.Services
-    .AddMcpServer(o => o.ServerInfo = new() { Name = "harscope", Version = "0.2.0" })
+    .AddMcpServer(o =>
+    {
+        o.ServerInfo = new() { Name = "harscope", Version = "0.3.0" };
+        o.ServerInstructions = ServerGuide.Text;
+    })
     .WithStdioServerTransport()
     .WithTools<HarTools>();
 
