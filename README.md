@@ -1,5 +1,11 @@
 # HARscope
 
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
+![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![MCP](https://img.shields.io/badge/MCP-stdio-green)
+[![M8ven Score](https://m8ven.ai/badge/mcp/quenzvezda-harscope-6gckhj?v=5abfba974b29972a50208587ca437c74)](https://m8ven.ai/mcp/quenzvezda-harscope-6gckhj?s=readme)
+
 A local MCP server for token-efficient investigation of HAR (HTTP Archive) files. AI agents query captures in small,
 focused steps (*progressive disclosure*: summary → timeline → search → one entry → part of a body), and the server
 returns only the requested data in bounded responses instead of sending the entire HAR file at once.
